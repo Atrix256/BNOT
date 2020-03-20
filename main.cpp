@@ -15,8 +15,8 @@
 
 #define DETERMINISTIC() true
 
-#define SHOW_VORONOI_EVOLUTION() true
-#define SHOW_VORONOI_WITH_POINTS() true
+#define SHOW_VORONOI_EVOLUTION() false
+#define SHOW_VORONOI_WITH_POINTS() false
 
 static const float c_goldenRatioConjugate = 0.61803398875f;  // 1 / goldenRatio
 
@@ -56,7 +56,7 @@ T Clamp(T value, T min, T max)
 }
 
 template <size_t N>
-float ToroidalDistanceSquared(const std::array<float, N>& A, const std::array<float, N>& B)
+inline float ToroidalDistanceSquared(const std::array<float, N>& A, const std::array<float, N>& B)
 {
     float ret = 0.0f;
     for (size_t index = 0; index < N; ++index)
@@ -271,9 +271,8 @@ struct DensityImage
     }
 };
 
-struct VoronoiCell
+struct SiteInfo
 {
-    float capacity = 0.0f;
     std::vector<size_t> members;
     size_t revisionNumber = 0;
 };
@@ -290,41 +289,71 @@ std::mt19937 GetRNG(uint32_t index)
     return rng;
 }
 
-void SaveVoronoi(const char* prefix, const std::vector<VoronoiCell>& voronoiCells, const std::vector<Vec2>& points, size_t width, size_t height, size_t index)
+void SaveVoronoi(const char* prefix, const std::vector<SiteInfo>& sitesInfo, const std::vector<Vec2>& sites, const std::vector<Vec2>& points, size_t width, size_t height, float dotRadius, size_t index)
 {
     char buffer[256];
     sprintf_s(buffer, "out/voronoi_%s_%zu.png", prefix, index);
 
-    static const float c_dotRadius = 2.0f;
-
     std::vector<unsigned char> pixels(width * height * 3, 0);
 
-    // draw the pixel membership
-    for (size_t cellIndex = 0; cellIndex < voronoiCells.size(); ++cellIndex)
+    // draw the location of the points
+    size_t siteIndex = 0;
+    for (const SiteInfo& siteInfo : sitesInfo)
     {
-        Vec3 color = IndexSVToRGB(cellIndex, 0.7f, 1.0f);
+        Vec3 color = IndexSVToRGB(siteIndex, 0.9f, 0.125f);
         unsigned char R = (unsigned char)Clamp(LinearToSRGB(color[0]) * 256.0f, 0.0f, 255.0f);
         unsigned char G = (unsigned char)Clamp(LinearToSRGB(color[1]) * 256.0f, 0.0f, 255.0f);
         unsigned char B = (unsigned char)Clamp(LinearToSRGB(color[2]) * 256.0f, 0.0f, 255.0f);
 
-        for (size_t pixelIndex : voronoiCells[cellIndex].members)
+        for (size_t pointIndex : siteInfo.members)
         {
-            pixels[pixelIndex * 3 + 0] = R;
-            pixels[pixelIndex * 3 + 1] = G;
-            pixels[pixelIndex * 3 + 2] = B;
+            const float c_dotRadius = dotRadius * 0.5f;
+            const Vec2& point = points[pointIndex];
+
+            int x = Clamp<int>(int(point[0] * float(width)), 0, (int)width - 1);
+            int y = Clamp<int>(int(point[1] * float(height)), 0, (int)height - 1);
+
+            int x1 = Clamp(x - int(ceil(c_dotRadius)), 0, (int)width - 1);
+            int x2 = Clamp(x + int(ceil(c_dotRadius)), 0, (int)width - 1);
+
+            int y1 = Clamp(y - int(ceil(c_dotRadius)), 0, (int)height - 1);
+            int y2 = Clamp(y + int(ceil(c_dotRadius)), 0, (int)height - 1);
+
+            for (int iy = y1; iy <= y2; ++iy)
+            {
+                float disty = float(iy) - float(y);
+                unsigned char* pixel = &pixels[(iy * width + x1) * 3];
+                for (int ix = x1; ix <= x2; ++ix)
+                {
+                    float distx = float(ix) - float(x);
+                    float distance = sqrtf(distx * distx + disty * disty);
+                    distance -= c_dotRadius;
+                    if (distance < 0.0f)
+                    {
+                        pixel[0] = R;
+                        pixel[1] = G;
+                        pixel[2] = B;
+                    }
+                    pixel += 3;
+                }
+            }
         }
+        siteIndex++;
     }
 
-    // draw the location of the sample points
-    for (size_t cellIndex = 0; cellIndex < voronoiCells.size(); ++cellIndex)
+    // draw the location of the sites
+    siteIndex = 0;
+    for (const Vec2& point : sites)
     {
-        Vec3 color = IndexSVToRGB(cellIndex, 1.0f, 1.0f);
+        const float c_dotRadius = dotRadius;
+
+        Vec3 color = IndexSVToRGB(siteIndex, 0.9f, 0.95f);
         unsigned char R = (unsigned char)Clamp(LinearToSRGB(color[0]) * 256.0f, 0.0f, 255.0f);
         unsigned char G = (unsigned char)Clamp(LinearToSRGB(color[1]) * 256.0f, 0.0f, 255.0f);
         unsigned char B = (unsigned char)Clamp(LinearToSRGB(color[2]) * 256.0f, 0.0f, 255.0f);
 
-        int x = Clamp<int>(int(points[cellIndex][0] * float(width)), 0, (int)width - 1);
-        int y = Clamp<int>(int(points[cellIndex][1] * float(height)), 0, (int)height - 1);
+        int x = Clamp<int>(int(point[0] * float(width)), 0, (int)width - 1);
+        int y = Clamp<int>(int(point[1] * float(height)), 0, (int)height - 1);
 
         int x1 = Clamp(x - int(ceil(c_dotRadius)), 0, (int)width - 1);
         int x2 = Clamp(x + int(ceil(c_dotRadius)), 0, (int)width - 1);
@@ -350,115 +379,43 @@ void SaveVoronoi(const char* prefix, const std::vector<VoronoiCell>& voronoiCell
                 pixel += 3;
             }
         }
+
+        siteIndex++;
     }
 
     stbi_write_png(buffer, (int)width, (int)height, 3, pixels.data(), (int)width * 3);
 }
 
-void MakeCapacityConstraintedVoronoiTessellation(std::mt19937& rng, std::vector<Vec2>& points, const DensityImage& densityImage, size_t iteration)
+void MakeCapacityConstraintedVoronoiTessellation(std::mt19937& rng, const std::vector<Vec2>& points, std::vector<Vec2>& sites, size_t iteration, size_t imageWidth, size_t imageHeight, float dotRadius)
 {
-    // This is a modified "Algorithm 1" in the paper, which is used for step 1 of the "Capacity-Constrained Method"
+    // This is "Algorithm 1" in the paper, which is used for step 1 of the "Capacity-Constrained Method"
 
-    const size_t c_numCells = points.size();
+    const size_t c_numCells = sites.size();
 
-    std::vector<VoronoiCell> voronoiCells(c_numCells);
-
-    // Make a randomized map of density image pixels to Voronoi cells (points).
-    // The capacity of all cells must be (roughly!) equal.
+    // Make a randomized map of points to sites. Each site must have the same number of points.
+    std::vector<SiteInfo> sitesInfo(c_numCells);
     {
-        // Get pixel density, sorted from smallest to largest, so we can pop the largest ones off the back and
-        // put it into a voronoi cell with the lowest capacity.
-        struct PixelsAndDensities
-        {
-            size_t pixelIndex;
-            float density;
-        };
-        std::vector<PixelsAndDensities> sortedPixelDensities(densityImage.densities.size());
-        {
-            for (size_t index = 0; index < densityImage.densities.size(); ++index)
-            {
-                sortedPixelDensities[index].pixelIndex = index;
-                sortedPixelDensities[index].density = densityImage.densities[index];
-            }
-            std::sort(sortedPixelDensities.begin(), sortedPixelDensities.end(),
-                [](const PixelsAndDensities& A, const PixelsAndDensities& B)
-                {
-                    return A.density < B.density;
-                }
-            );
-        }
+        std::vector<size_t> pointIndices(points.size());
+        std::iota(pointIndices.begin(), pointIndices.end(), (size_t)0);
+        std::shuffle(pointIndices.begin(), pointIndices.end(), rng);
 
-        // Assign these pixel densities to cells randomly, but as evenly as possible
-        {
-            // randomize the order of the Voronoi cells for getting density from pixels
-            struct VoronoiCellOrder
-            {
-                size_t cellIndex;
-                float capacity;
-            };
-            std::vector<VoronoiCellOrder> voronoiCellOrder(c_numCells);
-            for (size_t cellIndex = 0; cellIndex < voronoiCellOrder.size(); ++cellIndex)
-            {
-                voronoiCellOrder[cellIndex].cellIndex = cellIndex;
-                voronoiCellOrder[cellIndex].capacity = 0.0f;
-            }
-            std::shuffle(voronoiCellOrder.begin(), voronoiCellOrder.end(), rng);
-
-            // add each pixel to the Voronoi cell with the lowest capacity, otherwise preserving the randomized order from the shuffle.
-            while (!sortedPixelDensities.empty())
-            {
-                const PixelsAndDensities& pixelAndDensity = sortedPixelDensities.back();
-
-                // make a Voronoi cell entry with updated data
-                const VoronoiCellOrder& oldCellOrder = voronoiCellOrder.back();
-                VoronoiCellOrder updatedCellOrder;
-                updatedCellOrder.cellIndex = oldCellOrder.cellIndex;
-                updatedCellOrder.capacity = oldCellOrder.capacity + pixelAndDensity.density;
-
-                // find where this updated cell would go
-                size_t newIndex = std::lower_bound(
-                    voronoiCellOrder.begin(),
-                    voronoiCellOrder.end(),
-                    updatedCellOrder,
-                    [=](const VoronoiCellOrder& A, const VoronoiCellOrder& B)
-                    {
-                        return A.capacity >= B.capacity;
-                    }
-                ) - voronoiCellOrder.begin();
-
-                // calculate how many cells need to shift to the right to make room and do it if there are any
-                size_t numToShift = voronoiCellOrder.size() - 1 - newIndex;
-                if (numToShift > 0)
-                    memmove(&voronoiCellOrder[newIndex + 1], &voronoiCellOrder[newIndex], sizeof(VoronoiCellOrder)* numToShift);
-
-                // set the updated cell data
-                voronoiCellOrder[newIndex] = updatedCellOrder;
-
-                // store external data
-                voronoiCells[updatedCellOrder.cellIndex].capacity = updatedCellOrder.capacity;
-                voronoiCells[updatedCellOrder.cellIndex].members.push_back(pixelAndDensity.pixelIndex);
-
-                // remove the pixel from the list now that we've placed it in a voronoi cell
-                sortedPixelDensities.pop_back();
-            }
-        }
+        for (size_t index = 0; index < pointIndices.size(); ++index)
+            sitesInfo[index % sites.size()].members.push_back(pointIndices[index]);
     }
 
     if (iteration == 1 && SHOW_VORONOI_EVOLUTION())
-        SaveVoronoi("evolution", voronoiCells, points, densityImage.width, densityImage.height, 0);
+        SaveVoronoi("evolution", sitesInfo, sites, points, imageWidth, imageHeight, dotRadius, 0);
 
-    // The "Voronoi" cells now have roughly equal capacity, but they contain random pixels - not the pixels they should.
+    // The sites now have equal capacity, but they contain random pixels - not the pixels they should.
     // We now look at each pair of Voronoi cells and see if they have any pixels that want to swap for better results.
     // We do this until it stabilizes and no pixels want to swap.
-
     struct CellPairRevisionNumbers
     {
         size_t revisionNumber_i = (size_t)-1;
         size_t revisionNumber_j = (size_t)-1;
     };
-    std::vector<CellPairRevisionNumbers> cellPairRevisions(c_numCells * (c_numCells + 1) / 2 - 1); // the number of pairs we are checking
-
-    const float c_targetCapacity = densityImage.totalDensity / float(points.size());
+    static const size_t c_numCellPairs = c_numCells * (c_numCells + 1) / 2 - 1; // the number of pairs we are checking
+    std::vector<CellPairRevisionNumbers> cellPairRevisions(c_numCellPairs);
 
     printf("0%%");
     bool stable = false;
@@ -473,7 +430,7 @@ void MakeCapacityConstraintedVoronoiTessellation(std::mt19937& rng, std::vector<
         struct HeapItem
         {
             float key;
-            size_t pixelIndex;
+            size_t pointIndex;
 
             bool operator < (const HeapItem& B)
             {
@@ -486,46 +443,44 @@ void MakeCapacityConstraintedVoronoiTessellation(std::mt19937& rng, std::vector<
         for (size_t cellj = 1; cellj < c_numCells; ++cellj)
         {
             std::vector<HeapItem> Hi, Hj;
-            int percent = int(100.0f * float(cellj) / float(c_numCells - 1));
-            printf("\r                                     \rattempt %i %i%%", loopCount, percent);
             for (size_t celli = 0; celli < cellj; ++celli)
             {
-                // don't check these pairs of cells if we have already checked them previously and nothing changed.
+                if (celli == 0)
+                {
+                    int percent = int(100.0f * float(cellPairIndex) / float(c_numCellPairs - 1));
+                    printf("\r                                     \rattempt %i %i%%", loopCount, percent);
+                }
+
+                // don't check these pairs of cells if we have already checked them previously and nothing has changed.
                 CellPairRevisionNumbers& cellPairRevisionNumbers = cellPairRevisions[cellPairIndex];
                 cellPairIndex++;
-                if (cellPairRevisionNumbers.revisionNumber_i == voronoiCells[celli].revisionNumber && cellPairRevisionNumbers.revisionNumber_j == voronoiCells[cellj].revisionNumber)
+                if (cellPairRevisionNumbers.revisionNumber_i == sitesInfo[celli].revisionNumber && cellPairRevisionNumbers.revisionNumber_j == sitesInfo[cellj].revisionNumber)
                     continue;
 
                 Hi.clear();
                 Hj.clear();
 
                 // for each point belonging to cell i, calculate how much energy would be saved by switching to the other cell
-                for (size_t pixelIndex : voronoiCells[celli].members)
+                for (size_t pointIndex : sitesInfo[celli].members)
                 {
-                    Vec2 pixelUV;
-                    pixelUV[0] = float(pixelIndex % densityImage.width) / float(densityImage.width);
-                    pixelUV[1] = float(pixelIndex / densityImage.width) / float(densityImage.height);
+                    const Vec2& point = points[pointIndex];
 
                     HeapItem heapItem;
-                    heapItem.key = ToroidalDistanceSquared(pixelUV, points[celli]) - ToroidalDistanceSquared(pixelUV, points[cellj]);
-                    heapItem.key *= densityImage.densities[pixelIndex];
-                    heapItem.pixelIndex = pixelIndex;
+                    heapItem.key = ToroidalDistanceSquared(point, points[celli]) - ToroidalDistanceSquared(point, points[cellj]);
+                    heapItem.pointIndex = pointIndex;
 
                     Hi.push_back(heapItem);
                 }
                 std::make_heap(Hi.begin(), Hi.end());
 
                 // for each point belonging to cell j, calculate how much energy would be saved by switching to the other cell
-                for (size_t pixelIndex : voronoiCells[cellj].members)
+                for (size_t pointIndex : sitesInfo[cellj].members)
                 {
-                    Vec2 pixelUV;
-                    pixelUV[0] = float(pixelIndex % densityImage.width) / float(densityImage.width);
-                    pixelUV[1] = float(pixelIndex / densityImage.width) / float(densityImage.height);
+                    const Vec2& point = points[pointIndex];
 
                     HeapItem heapItem;
-                    heapItem.key = ToroidalDistanceSquared(pixelUV, points[cellj]) - ToroidalDistanceSquared(pixelUV, points[celli]);
-                    heapItem.key *= densityImage.densities[pixelIndex];
-                    heapItem.pixelIndex = pixelIndex;
+                    heapItem.key = ToroidalDistanceSquared(point, points[cellj]) - ToroidalDistanceSquared(point, points[celli]);
+                    heapItem.pointIndex = pointIndex;
 
                     Hj.push_back(heapItem);
                 }
@@ -537,27 +492,27 @@ void MakeCapacityConstraintedVoronoiTessellation(std::mt19937& rng, std::vector<
                     // get the pixel index of the largest value from each heap
                     std::pop_heap(Hi.begin(), Hi.end());
                     std::pop_heap(Hj.begin(), Hj.end());
-                    size_t pixelIndex_i = Hi.back().pixelIndex;
-                    size_t pixelIndex_j = Hj.back().pixelIndex;
+                    size_t pointIndex_i = Hi.back().pointIndex;
+                    size_t pointIndex_j = Hj.back().pointIndex;
                     Hi.pop_back();
                     Hj.pop_back();
 
                     // swap membership to decrease overall energy
-                    for (size_t& pixelIndex : voronoiCells[celli].members)
+                    for (size_t& pixelIndex : sitesInfo[celli].members)
                     {
-                        if (pixelIndex == pixelIndex_i)
+                        if (pixelIndex == pointIndex_i)
                         {
-                            pixelIndex = pixelIndex_j;
-                            voronoiCells[celli].revisionNumber++;
+                            pixelIndex = pointIndex_j;
+                            sitesInfo[celli].revisionNumber++;
                             break;
                         }
                     }
-                    for (size_t& pixelIndex : voronoiCells[cellj].members)
+                    for (size_t& pixelIndex : sitesInfo[cellj].members)
                     {
-                        if (pixelIndex == pixelIndex_j)
+                        if (pixelIndex == pointIndex_j)
                         {
-                            pixelIndex = pixelIndex_i;
-                            voronoiCells[cellj].revisionNumber++;
+                            pixelIndex = pointIndex_i;
+                            sitesInfo[cellj].revisionNumber++;
                             break;
                         }
                     }
@@ -567,18 +522,16 @@ void MakeCapacityConstraintedVoronoiTessellation(std::mt19937& rng, std::vector<
                     stable = false;
                 }
 
-                // NOTE: this does not deal with capacity in voronoi cells, and swaping invalidates the calculated capacity
-
                 // update revision numbers in case they changed
-                cellPairRevisionNumbers.revisionNumber_i = voronoiCells[celli].revisionNumber;
-                cellPairRevisionNumbers.revisionNumber_j = voronoiCells[cellj].revisionNumber;
+                cellPairRevisionNumbers.revisionNumber_i = sitesInfo[celli].revisionNumber;
+                cellPairRevisionNumbers.revisionNumber_j = sitesInfo[cellj].revisionNumber;
             }
         }
 
         printf("\r                                     \rattempt %i 100%% - %i swaps\n", loopCount, swapCount);
 
         if (iteration == 1 && SHOW_VORONOI_EVOLUTION())
-            SaveVoronoi("evolution", voronoiCells, points, densityImage.width, densityImage.height, loopCount);
+            SaveVoronoi("evolution", sitesInfo, sites, points, imageWidth, imageHeight, dotRadius, loopCount);
     }
 
     // Now move each point to the center of mass of all the points in it's Voronoi diagram
@@ -587,34 +540,26 @@ void MakeCapacityConstraintedVoronoiTessellation(std::mt19937& rng, std::vector<
         {
             float totalWeight = 0.0f;
             Vec2 centerOfMass = { 0.0f, 0.0f };
-            for (size_t pixelIndex : voronoiCells[cellIndex].members)
+            for (size_t pointIndex : sitesInfo[cellIndex].members)
             {
-                Vec2 pixelUV;
-                pixelUV[0] = float(pixelIndex % densityImage.width) / float(densityImage.width);
-                pixelUV[1] = float(pixelIndex / densityImage.width) / float(densityImage.height);
-
-                float weight = densityImage.densities[pixelIndex];
-
-                centerOfMass = centerOfMass + pixelUV * weight;
-                totalWeight += weight;
+                const Vec2& point = points[pointIndex];
+                centerOfMass = centerOfMass + point;
+                totalWeight += 1.0f;
             }
 
             centerOfMass = centerOfMass / totalWeight;
 
-            points[cellIndex] = centerOfMass;
+            sites[cellIndex] = centerOfMass;
         }
     }
 
     if (SHOW_VORONOI_WITH_POINTS())
     {
-        SaveVoronoi("points", voronoiCells, points, densityImage.width, densityImage.height, iteration);
+        SaveVoronoi("points", sitesInfo, sites, points, imageWidth, imageHeight, dotRadius, iteration);
     }
-
-    // TODO: make a pixelIndex to UV function? and make it handle half pixel offsets!
-    // TODO: and a UV to pixelIndex function.
 }
 
-bool GenerateBlueNoisePoints(const char* baseFileName, const size_t c_numPoints, const size_t c_numIterations, const int c_pointImageWidth, const int c_pointImageHeight, float dotRadius)
+bool GenerateBlueNoisePoints(const char* baseFileName, const size_t c_numPoints, const size_t c_numSites, const size_t c_numIterations, const int c_siteImageWidth, const int c_siteImageHeight, float dotRadius)
 {
     ScopedTimer timer(baseFileName);
 
@@ -625,7 +570,7 @@ bool GenerateBlueNoisePoints(const char* baseFileName, const size_t c_numPoints,
     if (!densityImage.Load(buffer))
         return false;
 
-    // save the starting image
+    // save the starting image (we made it greyscale)
     sprintf_s(buffer, "out/%s.png", baseFileName);
     printf("Saving starting image as %s\n\n", buffer);
     densityImage.Save(buffer);
@@ -633,7 +578,8 @@ bool GenerateBlueNoisePoints(const char* baseFileName, const size_t c_numPoints,
     // get a random number generator
     std::mt19937 rng = GetRNG(0);
 
-    // initialize point locations conforming to the density function passed in, using rejection sampling.
+    // Initialize point locations conforming to the density function passed in, using rejection sampling.
+    // These points are used as density information instead of pixels.
     std::vector<Vec2> points;
     {
         std::uniform_real_distribution<float> distDensity(0.0f, 1.0f);
@@ -642,6 +588,8 @@ bool GenerateBlueNoisePoints(const char* baseFileName, const size_t c_numPoints,
 
         while (points.size() < c_numPoints)
         {
+            // TODO: should try using a low discrepancy sampling here - like blue noise or sobol or something. maybe even regular sampling?
+
             int x = distWidth(rng);
             int y = distHeight(rng);
 
@@ -652,7 +600,28 @@ bool GenerateBlueNoisePoints(const char* baseFileName, const size_t c_numPoints,
             float u = float(x) / float(densityImage.width - 1);
             float v = float(y) / float(densityImage.height - 1);
 
-            points.push_back({u, v});
+            points.push_back({ u, v });
+        }
+    }
+
+    // save an image of the initial points generated
+    {
+        sprintf_s(buffer, "out/%s.points.png", baseFileName);
+        printf("Saving %s\n\n", buffer);
+
+        DensityImage image;
+        image.MakeImageFromPoints(c_siteImageWidth, c_siteImageHeight, points, dotRadius);
+        image.Save(buffer);
+    }
+
+    // initialize site locations
+    std::vector<Vec2> sites(c_numSites);
+    {
+        std::uniform_real_distribution<float> dist(0.0f, 1.0f);
+        for (Vec2& s : sites)
+        {
+            s[0] = dist(rng);
+            s[1] = dist(rng);
         }
     }
 
@@ -662,7 +631,7 @@ bool GenerateBlueNoisePoints(const char* baseFileName, const size_t c_numPoints,
         printf("Saving %s\n\n", buffer);
 
         DensityImage image;
-        image.MakeImageFromPoints(c_pointImageWidth, c_pointImageHeight, points, dotRadius);
+        image.MakeImageFromPoints(c_siteImageWidth, c_siteImageHeight, sites, dotRadius);
         image.Save(buffer);
     }
 
@@ -670,19 +639,20 @@ bool GenerateBlueNoisePoints(const char* baseFileName, const size_t c_numPoints,
     {
         for (int i = 1; i <= c_numIterations; ++i)
         {
-            MakeCapacityConstraintedVoronoiTessellation(rng, points, densityImage, i);
+            MakeCapacityConstraintedVoronoiTessellation(rng, points, sites, i, c_siteImageWidth, c_siteImageHeight, dotRadius);
 
             sprintf_s(buffer, "out/%s.%i.png", baseFileName, i);
             printf("Saving %s\n\n", buffer);
 
             DensityImage image;
-            image.MakeImageFromPoints(c_pointImageWidth, c_pointImageHeight, points, dotRadius);
+            image.MakeImageFromPoints(c_siteImageWidth, c_siteImageHeight, sites, dotRadius);
             image.Save(buffer);
         }
     }
 
     // TODO: write the final points out to a csv, or txt file, or .h or something
     // TODO: DFT of each step to see it evolving
+    // TODO: maybe show how to do it for a mathematical density function (including one that returns constant density)
 
     return true;
 }
@@ -692,7 +662,10 @@ int main(int argc, char** argv)
 
     //GenerateBlueNoisePoints("white", 10, 10, 512, 512, 3.0f);
 
-    GenerateBlueNoisePoints("puppysmall", 100, 5, 512, 512, 3.0f);
+    static const size_t c_numSites = 10000;
+    static const size_t c_numPoints = c_numSites * 10;// *1024;
+    static const size_t c_numIterations = 5;
+    GenerateBlueNoisePoints("puppy", c_numPoints, c_numSites, c_numIterations, 512, 512, 1.0f);
     // (10.57, 9.2, 10.5) seconds prior for 1000 points, 5 iterations for "puppysmall"
     // down to 6 seconds and some change when doing that early out.
 
@@ -706,6 +679,9 @@ int main(int argc, char** argv)
 ! oh man... they don't use a greyscale image to start out. they use a binary one representative of the greyscale image, using white noise to generate it.
  * maybe try using a blue noise texture or IGN and show how that affects quality.
  * using one type of blue noise to make another - WTF? :P
+ * also use IGN. could even use sobol...
+ * Masks: mask the image for thresholding, then use the results as points
+ * 2d points: use them as the points
 
 
 Currently:
@@ -714,15 +690,6 @@ Currently:
 
 
 * calculating centroid doesn't account for wrap around torroidal space. need to think about that.
- * ccvt also calculates distance differently. did they just not realize the optimization?
-       double dx = p1.x - p2.x;
-      if (fabs(dx) > size.x / 2) {
-        if (p1.x < size.x / 2) {
-          dx = p1.x - (p2.x - size.x);
-        } else {
-          dx = p1.x - (p2.x + size.x);
-        }
-      }
  * they also have code for centroid calculation
      inline Point2 centroid(const Point2& center, const Point2::Vector& points) const {
       Point2 centroid;
@@ -794,6 +761,7 @@ TODO:
 - may not need to explicitly store capacity? not sure...
 
 NOTES:
+* site = a sample point in the results.  point = a density function sample point that is used to make the results.
 * brightness of resulting image is proportional to input image, not supposed to be exact
 * BNOT seems to have basically same quality result, just runs more quickly and is more difficult to implement.
 * CCVT
@@ -801,7 +769,8 @@ NOTES:
  * you can't always divide the capacity up evenly. if you have "a lot" of points (whatever that is), the total density of the image divided by cell count will be < 1, but you can have individual pixels with density of 1.
  * TODO: what did you do to solve it?
 * mention your CCVT "optimization" with cell revision numbers. retime when everything is working correctly. (before then it went from 10 seconds to 6, so 40% time savings)
-
+* they use white noise to generate the binary sample points.
+* i originally thought this algorithm used float density pixel values and was getting bad results.
 * generating colors programatically: https://martin.ankerl.com/2009/12/09/how-to-create-random-colors-programmatically/
 
 Links:
