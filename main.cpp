@@ -545,6 +545,10 @@ int main(int argc, char** argv)
 
 /*
 
+TODO: need to multiply distance by density i think? not real sure though...
+* try with equal density too.
+* visualize steps of voronoi too.
+
 Question:
 * the energy switch between voronoi doesn't take into account density of the points which seems wrong.
  * is the algorithm listing incorrect?
