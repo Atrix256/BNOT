@@ -14,9 +14,12 @@
 
 #define DETERMINISTIC() true
 
-
+#define SHOW_VORONOI_EVOLUTION() true
+#define SHOW_VORONOI_WITH_POINTS() true
 
 static const float c_goldenRatioConjugate = 0.61803398875f;  // 1 / goldenRatio
+
+static const float c_antiAliasWidth = 1.2f;
 
 using Vec2 = std::array<float, 2>;
 using Vec3 = std::array<float, 3>;
@@ -207,8 +210,6 @@ struct DensityImage
         densities.resize(width * height);
         std::fill(densities.begin(), densities.end(), 0.0f);
 
-        static const float c_antiAliasWidth = 1.2f;
-
         if (dotRadius <= 0.0f)
         {
             for (const Vec2& point : points)
@@ -262,7 +263,72 @@ std::mt19937 GetRNG(uint32_t index)
     return rng;
 }
 
-void MakeCapacityConstraintedVoronoiTessellation(std::mt19937& rng, std::vector<Vec2>& points, const DensityImage& densityImage)
+void SaveVoronoi(const char* prefix, const std::vector<std::vector<size_t>>& cellMembers, const std::vector<Vec2>& points, size_t width, size_t height, size_t index)
+{
+    char buffer[256];
+    sprintf_s(buffer, "out/voronoi_%s_%zu.png", prefix, index);
+
+    static const float c_dotRadius = 2.0f;
+
+    std::vector<unsigned char> pixels(width * height * 3, 0);
+
+    // draw the pixel membership
+    for (size_t cellIndex = 0; cellIndex < cellMembers.size(); ++cellIndex)
+    {
+        Vec3 color = IndexSVToRGB(cellIndex, 0.7f, 1.0f);
+        unsigned char R = (unsigned char)Clamp(LinearToSRGB(color[0]) * 256.0f, 0.0f, 255.0f);
+        unsigned char G = (unsigned char)Clamp(LinearToSRGB(color[1]) * 256.0f, 0.0f, 255.0f);
+        unsigned char B = (unsigned char)Clamp(LinearToSRGB(color[2]) * 256.0f, 0.0f, 255.0f);
+
+        for (size_t pixelIndex : cellMembers[cellIndex])
+        {
+            pixels[pixelIndex * 3 + 0] = R;
+            pixels[pixelIndex * 3 + 1] = G;
+            pixels[pixelIndex * 3 + 2] = B;
+        }
+    }
+
+    // draw the location of the sample points
+    for (size_t cellIndex = 0; cellIndex < cellMembers.size(); ++cellIndex)
+    {
+        Vec3 color = IndexSVToRGB(cellIndex, 1.0f, 1.0f);
+        unsigned char R = (unsigned char)Clamp(LinearToSRGB(color[0]) * 256.0f, 0.0f, 255.0f);
+        unsigned char G = (unsigned char)Clamp(LinearToSRGB(color[1]) * 256.0f, 0.0f, 255.0f);
+        unsigned char B = (unsigned char)Clamp(LinearToSRGB(color[2]) * 256.0f, 0.0f, 255.0f);
+
+        int x = Clamp<int>(int(points[cellIndex][0] * float(width)), 0, (int)width - 1);
+        int y = Clamp<int>(int(points[cellIndex][1] * float(height)), 0, (int)height - 1);
+
+        int x1 = Clamp(x - int(ceil(c_dotRadius)), 0, (int)width - 1);
+        int x2 = Clamp(x + int(ceil(c_dotRadius)), 0, (int)width - 1);
+
+        int y1 = Clamp(y - int(ceil(c_dotRadius)), 0, (int)height - 1);
+        int y2 = Clamp(y + int(ceil(c_dotRadius)), 0, (int)height - 1);
+
+        for (int iy = y1; iy <= y2; ++iy)
+        {
+            float disty = float(iy) - float(y);
+            unsigned char* pixel = &pixels[(iy * width + x1) * 3];
+            for (int ix = x1; ix <= x2; ++ix)
+            {
+                float distx = float(ix) - float(x);
+                float distance = sqrtf(distx * distx + disty * disty);
+                distance -= c_dotRadius;
+                if (distance < 0.0f)
+                {
+                    pixel[0] = R;
+                    pixel[1] = G;
+                    pixel[2] = B;
+                }
+                pixel += 3;
+            }
+        }
+    }
+
+    stbi_write_png(buffer, (int)width, (int)height, 3, pixels.data(), (int)width * 3);
+}
+
+void MakeCapacityConstraintedVoronoiTessellation(std::mt19937& rng, std::vector<Vec2>& points, const DensityImage& densityImage, size_t iteration)
 {
     // This is "Algorithm 1" in the paper, which is used for step 1 of the "Capacity-Constrained Method"
 
@@ -357,6 +423,9 @@ void MakeCapacityConstraintedVoronoiTessellation(std::mt19937& rng, std::vector<
             }
         }
     }
+
+    if (iteration == 1 && SHOW_VORONOI_EVOLUTION())
+        SaveVoronoi("evolution", voronoiCellMembers, points, densityImage.width, densityImage.height, 0);
 
     // The "Voronoi" cells now have roughly equal capacity, but they contain random pixels - not the pixels they should.
     // We now look at each pair of Voronoi cells and see if they have any pixels that want to swap for better results.
@@ -467,6 +536,9 @@ void MakeCapacityConstraintedVoronoiTessellation(std::mt19937& rng, std::vector<
         }
 
         printf("\r                                     \rattempt %i 100%% - %i swaps\n", loopCount, swapCount);
+
+        if (iteration == 1 && SHOW_VORONOI_EVOLUTION())
+            SaveVoronoi("evolution", voronoiCellMembers, points, densityImage.width, densityImage.height, loopCount);
     }
 
     // Now move each point to the center of mass of all the points in it's Voronoi diagram
@@ -493,7 +565,10 @@ void MakeCapacityConstraintedVoronoiTessellation(std::mt19937& rng, std::vector<
         }
     }
 
-    int ijkl = 0;
+    if (SHOW_VORONOI_WITH_POINTS())
+    {
+        SaveVoronoi("points", voronoiCellMembers, points, densityImage.width, densityImage.height, iteration);
+    }
 
     // TODO: make a pixelIndex to UV function? and make it handle half pixel offsets!
     // TODO: and a UV to pixelIndex function.
@@ -553,7 +628,7 @@ bool GenerateBlueNoisePoints(const char* baseFileName, const size_t c_numPoints,
     {
         for (int i = 1; i <= c_numIterations; ++i)
         {
-            MakeCapacityConstraintedVoronoiTessellation(rng, points, densityImage);
+            MakeCapacityConstraintedVoronoiTessellation(rng, points, densityImage, i);
 
             sprintf_s(buffer, "out/%s.%i.png", baseFileName, i);
             printf("Saving %s\n\n", buffer);
@@ -585,13 +660,12 @@ int main(int argc, char** argv)
 /*
 
 Currently:
-* visualize steps of each voronoi.  draw a circle in a color, and all the points belonging to that cell with the same hue but different brightness
- * make a #define about whether to do this or not.
  * want to visualize the voronoi that goes with each point set, but also for debugging probably want to look at how it evolves.
+! When SHOW_VORONOI_EVOLUTION() is true, there are some pixels that never seem to collect around their cells and float by themselves. some bug somewhere or a logic problem.
+
 
 
 TODO: need to multiply distance by density i think? not real sure though... UPDATE: i did this. it wasn't the fix. should re-read paper
-* visualize steps of voronoi
 * show dft of each step
 
 Question:
