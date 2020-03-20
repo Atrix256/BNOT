@@ -14,7 +14,12 @@
 
 #define DETERMINISTIC() true
 
+
+
+static const float c_goldenRatioConjugate = 0.61803398875f;  // 1 / goldenRatio
+
 using Vec2 = std::array<float, 2>;
+using Vec3 = std::array<float, 3>;
 
 template <typename T>
 T Clamp(T value, T min, T max)
@@ -92,11 +97,40 @@ float LinearToSRGB(float x)
         return pow(x * 1.055f, 1.0f / 2.4f) - 0.055f;
 }
 
-struct PointWithCapacity
+float SRGBToLinear(float x)
 {
-    Vec2 point;
-    float capacityZ; // TODO: do we need this?
-};
+    x = Clamp(x, 0.0f, 1.0f);
+    if (x < 0.04045f)
+        return x / 12.92f;
+    else
+        return pow((x + 0.055f) / 1.055f, 2.4f);
+}
+
+float Fract(float x)
+{
+    return x - floor(x);
+}
+
+Vec3 IndexSVToRGB(size_t index, float s, float v)
+{
+    float h = Fract(float(index) * c_goldenRatioConjugate);
+
+    int h_i = int(h * 6);
+    float f = Fract(h * 6);
+    float p = v * (1.0f - s);
+    float q = v * (1.0f - f * s);
+    float t = v * (1.0f - (1.0f - f) * s);
+    switch (h_i)
+    {
+        case 0: return Vec3{ v, t, p };
+        case 1: return Vec3{ q, v, p };
+        case 2: return Vec3{ p, v, t };
+        case 3: return Vec3{ p, q, v };
+        case 4: return Vec3{ t, p, v };
+        case 5: return Vec3{ v, p, q };
+    }
+    return Vec3{ 0.0f, 0.0f, 0.0f };
+}
 
 struct DensityImage
 {
@@ -166,7 +200,7 @@ struct DensityImage
         return densities[y * width + x];
     }
 
-    void MakeImageFromPoints(int w, int h, const std::vector<PointWithCapacity>& points, float dotRadius)
+    void MakeImageFromPoints(int w, int h, const std::vector<Vec2>& points, float dotRadius)
     {
         width = w;
         height = h;
@@ -177,19 +211,19 @@ struct DensityImage
 
         if (dotRadius <= 0.0f)
         {
-            for (const PointWithCapacity& point : points)
+            for (const Vec2& point : points)
             {
-                int x = Clamp(int(point.point[0] * float(width)), 0, width - 1);
-                int y = Clamp(int(point.point[1] * float(height)), 0, height - 1);
+                int x = Clamp(int(point[0] * float(width)), 0, width - 1);
+                int y = Clamp(int(point[1] * float(height)), 0, height - 1);
                 GetDensity(x, y) = 1.0f;
             }
         }
         else
         {
-            for (const PointWithCapacity& point : points)
+            for (const Vec2& point : points)
             {
-                int x = Clamp(int(point.point[0] * float(width)), 0, width - 1);
-                int y = Clamp(int(point.point[1] * float(height)), 0, height - 1);
+                int x = Clamp(int(point[0] * float(width)), 0, width - 1);
+                int y = Clamp(int(point[1] * float(height)), 0, height - 1);
 
                 int x1 = Clamp(x - int(ceil(dotRadius + c_antiAliasWidth)), 0, width - 1);
                 int x2 = Clamp(x + int(ceil(dotRadius + c_antiAliasWidth)), 0, width - 1);
@@ -228,7 +262,7 @@ std::mt19937 GetRNG(uint32_t index)
     return rng;
 }
 
-void MakeCapacityConstraintedVoronoiTessellation(std::mt19937& rng, std::vector<PointWithCapacity>& points, const DensityImage& densityImage)
+void MakeCapacityConstraintedVoronoiTessellation(std::mt19937& rng, std::vector<Vec2>& points, const DensityImage& densityImage)
 {
     // This is "Algorithm 1" in the paper, which is used for step 1 of the "Capacity-Constrained Method"
 
@@ -371,7 +405,8 @@ void MakeCapacityConstraintedVoronoiTessellation(std::mt19937& rng, std::vector<
                     pixelUV[1] = float(pixelIndex / densityImage.width) / float(densityImage.height);
 
                     HeapItem heapItem;
-                    heapItem.key = ToroidalDistanceSquared(pixelUV, points[celli].point) - ToroidalDistanceSquared(pixelUV, points[cellj].point);
+                    heapItem.key = ToroidalDistanceSquared(pixelUV, points[celli]) - ToroidalDistanceSquared(pixelUV, points[cellj]);
+                    heapItem.key *= densityImage.densities[pixelIndex];
                     heapItem.pixelIndex = pixelIndex;
 
                     Hi.push_back(heapItem);
@@ -386,7 +421,8 @@ void MakeCapacityConstraintedVoronoiTessellation(std::mt19937& rng, std::vector<
                     pixelUV[1] = float(pixelIndex / densityImage.width) / float(densityImage.height);
 
                     HeapItem heapItem;
-                    heapItem.key = ToroidalDistanceSquared(pixelUV, points[cellj].point) - ToroidalDistanceSquared(pixelUV, points[celli].point);
+                    heapItem.key = ToroidalDistanceSquared(pixelUV, points[cellj]) - ToroidalDistanceSquared(pixelUV, points[celli]);
+                    heapItem.key *= densityImage.densities[pixelIndex];
                     heapItem.pixelIndex = pixelIndex;
 
                     Hj.push_back(heapItem);
@@ -453,13 +489,14 @@ void MakeCapacityConstraintedVoronoiTessellation(std::mt19937& rng, std::vector<
 
             centerOfMass = centerOfMass / totalWeight;
 
-            points[cellIndex].point = centerOfMass;
+            points[cellIndex] = centerOfMass;
         }
     }
 
     int ijkl = 0;
 
     // TODO: make a pixelIndex to UV function? and make it handle half pixel offsets!
+    // TODO: and a UV to pixelIndex function.
 }
 
 bool GenerateBlueNoisePoints(const char* baseFileName, const size_t c_numPoints, const size_t c_numIterations, const int c_pointImageWidth, const int c_pointImageHeight, float dotRadius)
@@ -480,7 +517,7 @@ bool GenerateBlueNoisePoints(const char* baseFileName, const size_t c_numPoints,
     std::mt19937 rng = GetRNG(0);
 
     // initialize point locations conforming to the density function passed in, using rejection sampling.
-    std::vector<PointWithCapacity> points;
+    std::vector<Vec2> points;
     {
         std::uniform_real_distribution<float> distDensity(0.0f, 1.0f);
         std::uniform_int_distribution<int> distWidth(0, densityImage.width - 1);
@@ -498,7 +535,7 @@ bool GenerateBlueNoisePoints(const char* baseFileName, const size_t c_numPoints,
             float u = float(x) / float(densityImage.width - 1);
             float v = float(y) / float(densityImage.height - 1);
 
-            points.push_back({ {u, v}, -1.0f });
+            points.push_back({u, v});
         }
     }
 
@@ -536,7 +573,9 @@ bool GenerateBlueNoisePoints(const char* baseFileName, const size_t c_numPoints,
 int main(int argc, char** argv)
 {
 
-    GenerateBlueNoisePoints("puppysmall", 1000, 10, 512, 512, 3.0f);
+    //GenerateBlueNoisePoints("white", 10, 10, 512, 512, 3.0f);
+
+    GenerateBlueNoisePoints("puppysmall", 10, 5, 512, 512, 3.0f);
 
     //GenerateBlueNoisePoints("mountains", 1000000);
 
@@ -545,9 +584,15 @@ int main(int argc, char** argv)
 
 /*
 
-TODO: need to multiply distance by density i think? not real sure though...
-* try with equal density too.
-* visualize steps of voronoi too.
+Currently:
+* visualize steps of each voronoi.  draw a circle in a color, and all the points belonging to that cell with the same hue but different brightness
+ * make a #define about whether to do this or not.
+ * want to visualize the voronoi that goes with each point set, but also for debugging probably want to look at how it evolves.
+
+
+TODO: need to multiply distance by density i think? not real sure though... UPDATE: i did this. it wasn't the fix. should re-read paper
+* visualize steps of voronoi
+* show dft of each step
 
 Question:
 * the energy switch between voronoi doesn't take into account density of the points which seems wrong.
@@ -572,6 +617,8 @@ NOTES:
  * they say "assign points randomly to a cell, but make sure the cells have even weights". They don't say how they solve this "pluralized knapsack problem".
  * you can't always divide the capacity up evenly. if you have "a lot" of points (whatever that is), the total density of the image divided by cell count will be < 1, but you can have individual pixels with density of 1.
  * TODO: what did you do to solve it?
+
+* generating colors programatically: https://martin.ankerl.com/2009/12/09/how-to-create-random-colors-programmatically/
 
 Papers:
 
