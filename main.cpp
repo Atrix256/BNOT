@@ -458,6 +458,8 @@ void MakeCapacityConstraintedVoronoiTessellation(std::mt19937& rng, std::vector<
     };
     std::vector<CellPairRevisionNumbers> cellPairRevisions(c_numCells * (c_numCells + 1) / 2 - 1); // the number of pairs we are checking
 
+    const float c_targetCapacity = densityImage.totalDensity / float(points.size());
+
     printf("0%%");
     bool stable = false;
     int loopCount = 0;
@@ -497,7 +499,7 @@ void MakeCapacityConstraintedVoronoiTessellation(std::mt19937& rng, std::vector<
                 Hi.clear();
                 Hj.clear();
 
-                // for each point belonging to cell i, calculate how much "energy" would be saved by switching to the other cell
+                // for each point belonging to cell i, calculate how much energy would be saved by switching to the other cell
                 for (size_t pixelIndex : voronoiCells[celli].members)
                 {
                     Vec2 pixelUV;
@@ -513,7 +515,7 @@ void MakeCapacityConstraintedVoronoiTessellation(std::mt19937& rng, std::vector<
                 }
                 std::make_heap(Hi.begin(), Hi.end());
 
-                // for each point belonging to cell j, calculate how much "energy" would be saved by switching to the other cell
+                // for each point belonging to cell j, calculate how much energy would be saved by switching to the other cell
                 for (size_t pixelIndex : voronoiCells[cellj].members)
                 {
                     Vec2 pixelUV;
@@ -564,6 +566,8 @@ void MakeCapacityConstraintedVoronoiTessellation(std::mt19937& rng, std::vector<
 
                     stable = false;
                 }
+
+                // NOTE: this does not deal with capacity in voronoi cells, and swaping invalidates the calculated capacity
 
                 // update revision numbers in case they changed
                 cellPairRevisionNumbers.revisionNumber_i = voronoiCells[celli].revisionNumber;
@@ -688,7 +692,7 @@ int main(int argc, char** argv)
 
     //GenerateBlueNoisePoints("white", 10, 10, 512, 512, 3.0f);
 
-    GenerateBlueNoisePoints("puppysmall", 1000, 5, 512, 512, 3.0f);
+    GenerateBlueNoisePoints("puppysmall", 100, 5, 512, 512, 3.0f);
     // (10.57, 9.2, 10.5) seconds prior for 1000 points, 5 iterations for "puppysmall"
     // down to 6 seconds and some change when doing that early out.
 
@@ -699,9 +703,66 @@ int main(int argc, char** argv)
 
 /*
 
+! oh man... they don't use a greyscale image to start out. they use a binary one representative of the greyscale image, using white noise to generate it.
+ * maybe try using a blue noise texture or IGN and show how that affects quality.
+ * using one type of blue noise to make another - WTF? :P
+
+
 Currently:
  * want to visualize the voronoi that goes with each point set, but also for debugging probably want to look at how it evolves.
 ! When SHOW_VORONOI_EVOLUTION() is true, there are some pixels that never seem to collect around their cells and float by themselves. some bug somewhere or a logic problem.
+
+
+* calculating centroid doesn't account for wrap around torroidal space. need to think about that.
+ * ccvt also calculates distance differently. did they just not realize the optimization?
+       double dx = p1.x - p2.x;
+      if (fabs(dx) > size.x / 2) {
+        if (p1.x < size.x / 2) {
+          dx = p1.x - (p2.x - size.x);
+        } else {
+          dx = p1.x - (p2.x + size.x);
+        }
+      }
+ * they also have code for centroid calculation
+     inline Point2 centroid(const Point2& center, const Point2::Vector& points) const {
+      Point2 centroid;
+      int pointsSize = static_cast<int>(points.size());
+      for (int j = 0; j < pointsSize; ++j) {
+        double p = points[j].x;
+        if (fabs(center.x - p) > size.x / 2) {
+          if (center.x < size.x / 2) {
+            p -= size.x;
+          } else {
+            p += size.x;
+          }
+        }
+        centroid.x += p;
+        p = points[j].y;
+        if (fabs(center.y - p) > size.y / 2) {
+          if (center.y < size.y / 2) {
+            p -= size.y;
+          } else {
+            p += size.y;
+          }
+        }
+        centroid.y += p;
+      }
+      centroid.x /= pointsSize;
+      centroid.y /= pointsSize;
+      if (centroid.x < 0) {
+        centroid.x += size.x;
+      }
+      if (centroid.x >= size.x) {
+        centroid.x -= size.x;
+      }
+      if (centroid.y < 0) {
+        centroid.y += size.y;
+      }
+      if (centroid.y >= size.y) {
+        centroid.y -= size.y;
+      }
+      return centroid;
+    }
 
 
 * I think the thing is "how much energy is gained by switching". Both points have to agree its good to swap.
@@ -743,6 +804,14 @@ NOTES:
 
 * generating colors programatically: https://martin.ankerl.com/2009/12/09/how-to-create-random-colors-programmatically/
 
+Links:
+
+I resurrected the code they made to go with the paper.  It was on google code.
+https://github.com/Atrix256/ccvt
+
+video and post release paper here (if you have acm access)
+https://dl.acm.org/doi/10.1145/1576246.1531392
+
 Papers:
 
 Blue Noise Through Optimal Transport
@@ -763,5 +832,9 @@ https://pdfs.semanticscholar.org/50c6/47450bb252ed0a3286316b9f8e486c1da0d2.pdf
 Should read this from 2015.
 "A Survey of Blue-Noise Sampling and Its Applications"
 https://www.researchgate.net/publication/276513263_A_Survey_of_Blue-Noise_Sampling_and_Its_Applications
+
+
+From Bruno Levy
+https://members.loria.fr/Bruno.Levy/papers/CPD_SIGASIA_2016.pdf
 
 */
