@@ -479,8 +479,8 @@ void MakeCapacityConstraintedVoronoiTessellation(std::mt19937& rng, std::vector<
                     heapItem.pixelIndex = pixelIndex;
 
                     Hi.push_back(heapItem);
-                    std::push_heap(Hi.begin(), Hi.end());
                 }
+                std::make_heap(Hi.begin(), Hi.end());
 
                 // for each point belonging to cell j, calculate how much "energy" would be saved by switching to the other cell
                 for (size_t pixelIndex : voronoiCellMembers[cellj])
@@ -495,8 +495,8 @@ void MakeCapacityConstraintedVoronoiTessellation(std::mt19937& rng, std::vector<
                     heapItem.pixelIndex = pixelIndex;
 
                     Hj.push_back(heapItem);
-                    std::push_heap(Hj.begin(), Hj.end());
                 }
+                std::make_heap(Hj.begin(), Hj.end());
 
                 // while we have more pixels to swap, and swapping results in a net energy savings
                 while (!Hi.empty() && !Hj.empty() && (Hi[0].key + Hj[0].key) > 0.0f)
