@@ -296,12 +296,10 @@ std::mt19937 GetRNG(uint32_t index)
     return rng;
 }
 
-// TODO: get a baseFileName as a parameter so we can make it named after eg "uniform"
-
-void SaveVoronoi(const char* prefix, const std::vector<SiteInfo>& sitesInfo, const std::vector<Vec2>& sites, const std::vector<Vec2>& points, size_t width, size_t height, float dotRadius, size_t index)
+void SaveVoronoi(const char* baseFileName, const std::vector<SiteInfo>& sitesInfo, const std::vector<Vec2>& sites, const std::vector<Vec2>& points, size_t width, size_t height, float dotRadius, size_t index)
 {
     char buffer[256];
-    sprintf_s(buffer, "out/voronoi_%s_%zu.png", prefix, index);
+    sprintf_s(buffer, "out/%s.voronoi_%zu.png", baseFileName, index);
 
     std::vector<unsigned char> pixels(width * height * 3, 0);
 
@@ -396,7 +394,7 @@ void SaveVoronoi(const char* prefix, const std::vector<SiteInfo>& sitesInfo, con
 }
 
 // returns true if it did any swaps
-void MakeCapacityConstraintedVoronoiTessellation(std::mt19937& rng, const std::vector<Vec2>& points, std::vector<Vec2>& sites, size_t imageWidth, size_t imageHeight, float dotRadius, const Parameters& parameters)
+void MakeCapacityConstraintedVoronoiTessellation(const char* baseFileName, std::mt19937& rng, const std::vector<Vec2>& points, std::vector<Vec2>& sites, size_t imageWidth, size_t imageHeight, float dotRadius, const Parameters& parameters)
 {
     // This is "Algorithm 1" in the paper, which is used for step 1 of the "Capacity-Constrained Method"
 
@@ -414,7 +412,7 @@ void MakeCapacityConstraintedVoronoiTessellation(std::mt19937& rng, const std::v
     }
 
     if (parameters.debug.showVoronoiEvolution)
-        SaveVoronoi("evolution", sitesInfo, sites, points, imageWidth, imageHeight, dotRadius, 0);
+        SaveVoronoi(baseFileName, sitesInfo, sites, points, imageWidth, imageHeight, dotRadius, 0);
 
     // The sites now have equal capacity, but they contain random pixels - not the pixels they should.
     // We now look at each pair of Voronoi cells and see if they have any pixels that want to swap for better results.
@@ -543,7 +541,7 @@ void MakeCapacityConstraintedVoronoiTessellation(std::mt19937& rng, const std::v
         printf("\r                                     \riteration %i 100%% - %i swaps\n", loopCount, swapCount);
 
         if (parameters.debug.showVoronoiEvolution)
-            SaveVoronoi("evolution", sitesInfo, sites, points, imageWidth, imageHeight, dotRadius, loopCount);
+            SaveVoronoi(baseFileName, sitesInfo, sites, points, imageWidth, imageHeight, dotRadius, loopCount);
     }
 
     // TODO: do this for each cell when they have swaps occur
@@ -555,7 +553,29 @@ void MakeCapacityConstraintedVoronoiTessellation(std::mt19937& rng, const std::v
             Vec2 centerOfMass = { 0.0f, 0.0f };
             for (size_t pointIndex : sitesInfo[cellIndex].members)
             {
-                const Vec2& point = points[pointIndex];
+                Vec2 point = points[pointIndex];
+
+                // make sure the point is the closest version of the point to the site, torroidally
+                {
+                    float distx = fabs(sites[cellIndex][0] - point[0]);
+                    if (distx > 0.5f)
+                    {
+                        if (sites[cellIndex][0] < 0.5f)
+                            point[0] -= 1.0f;
+                        else
+                            point[0] += 1.0f;
+                    }
+
+                    float disty = fabs(sites[cellIndex][1] - point[1]);
+                    if (disty > 0.5f)
+                    {
+                        if (sites[cellIndex][1] < 0.5f)
+                            point[1] -= 1.0f;
+                        else
+                            point[1] += 1.0f;
+                    }
+                }
+
                 centerOfMass = centerOfMass + point;
                 totalWeight += 1.0f;
             }
@@ -636,7 +656,7 @@ void GenerateBlueNoisePoints(const char* baseFileName, const size_t c_numPoints,
 
     // iteratively optimize the points into blue noise
     {
-        MakeCapacityConstraintedVoronoiTessellation(rng, points, sites, c_siteImageWidth, c_siteImageHeight, dotRadius, params);
+        MakeCapacityConstraintedVoronoiTessellation(baseFileName, rng, points, sites, c_siteImageWidth, c_siteImageHeight, dotRadius, params);
 
         // TODO: move this into MakeCapacityConstraintedVoronoiTessellation() i guess
         int iteration = 1;
@@ -865,6 +885,8 @@ Currently:
 
 TODO: need to multiply distance by density i think? not real sure though... UPDATE: i did this. it wasn't the fix. should re-read paper
 * show dft of each step
+
+* in blog, show the full story of each algorithm in pictures
 
 Question:
 * the energy switch between voronoi doesn't take into account density of the points which seems wrong.
