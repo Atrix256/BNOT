@@ -848,7 +848,7 @@ int main(int argc, char** argv)
     bool doTest_Uniform1k   = false;
     bool doTest_Procedural  = false;
     bool doTest_SolidLDS    = true;  // TODO: this and the next are for showing halton doing better than white
-    bool doTest_GradientLDS = true;  // TODO: try and make the difference between white and LDS bigger in both solid and gradient
+    bool doTest_GradientLDS = false;  // TODO: try and make the difference between white and LDS bigger in both solid and gradient
     bool doTest_Gradient    = false;
     bool doTest_PuppySmall  = false;
     bool doTest_Puppy       = false;
@@ -939,7 +939,7 @@ int main(int argc, char** argv)
     {
         Parameters params;
         params.baseFileName = "solid";
-        params.numSites = 1024;
+        params.numSites = 4096;
         params.numPoints = params.numSites * 5;
         params.siteImageDotRadius = 0.5f;
 
