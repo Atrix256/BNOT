@@ -749,11 +749,11 @@ void GenerateBlueNoisePoints(const Parameters& params, const GENERATE_POINTS_LAM
 
 int main(int argc, char** argv)
 {
-    bool doTest_Uniform64 = true;
-    bool doTest_Uniform1k = true;
-    bool doTest_Procedural = true;
-    bool doTest_PuppySmall = true;
-    bool doTest_Puppy = true;
+    bool doTest_Uniform64 = false;
+    bool doTest_Uniform1k = false;
+    bool doTest_Procedural = false;
+    bool doTest_PuppySmall = false;
+    bool doTest_Puppy = false;
     bool doTest_Mountain = true;
 
     // This is the "classic" algorithm making regular blue noise.
@@ -932,168 +932,37 @@ int main(int argc, char** argv)
 
 /*
 
-! ccvt centroidalizes after every swap. makes sense, you should try that too.
- * they only do "1 iteration" btw. they go til it converges then leave it there.
+* revision number thing doesn't seem to be working! if we can fix that, it'd be way better. could do more points that are smaller for mountains.
+* LDS vs white noise for that sampling stuff for initial image distribution. or maybe just talk about it and how i'll bet it's better.
+ * could just do halton for example.
+ * do this on a white image?
 
-! oh man... they don't use a greyscale image to start out. they use a binary one representative of the greyscale image, using white noise to generate it.
- * maybe try using a blue noise texture or IGN and show how that affects quality.
- * using one type of blue noise to make another - WTF? :P
- * also use IGN. could even use sobol...
- * Masks: mask the image for thresholding, then use the results as points
- * 2d points: use them as the points
+* do a greyscale ramp image test?
 
- * the CCVT code repo says it's GPL but i don't think it is. verify & fix that!
- https://github.com/Atrix256/ccvt
-
- ? show a power diagram test w/ uniform (classic mode)?
-
- DFT! compare with mitchell's best candidate.
-
- Talk about how to make progressive?
-
- * revision number thing doesn't seem to be working! if we can fix that, it'd be way better. could do more points that are smaller for mountains.
-
-Currently:
- * want to visualize the voronoi that goes with each point set, but also for debugging probably want to look at how it evolves.
-! When SHOW_VORONOI_EVOLUTION() is true, there are some pixels that never seem to collect around their cells and float by themselves. some bug somewhere or a logic problem.
-
-
-* calculating centroid doesn't account for wrap around torroidal space. need to think about that.
- * they also have code for centroid calculation
-     inline Point2 centroid(const Point2& center, const Point2::Vector& points) const {
-      Point2 centroid;
-      int pointsSize = static_cast<int>(points.size());
-      for (int j = 0; j < pointsSize; ++j) {
-        double p = points[j].x;
-        if (fabs(center.x - p) > size.x / 2) {
-          if (center.x < size.x / 2) {
-            p -= size.x;
-          } else {
-            p += size.x;
-          }
-        }
-        centroid.x += p;
-        p = points[j].y;
-        if (fabs(center.y - p) > size.y / 2) {
-          if (center.y < size.y / 2) {
-            p -= size.y;
-          } else {
-            p += size.y;
-          }
-        }
-        centroid.y += p;
-      }
-      centroid.x /= pointsSize;
-      centroid.y /= pointsSize;
-      if (centroid.x < 0) {
-        centroid.x += size.x;
-      }
-      if (centroid.x >= size.x) {
-        centroid.x -= size.x;
-      }
-      if (centroid.y < 0) {
-        centroid.y += size.y;
-      }
-      if (centroid.y >= size.y) {
-        centroid.y -= size.y;
-      }
-      return centroid;
-    }
-
-
-* I think the thing is "how much energy is gained by switching". Both points have to agree its good to swap.
- * And it does energy squared apparently.
- * Energy is integrating density over the cell, minus the amount of capacity each cell should have.
- * If it's negative though??
-
-! could speed things up by keeping a "revision #" per cell, and incrementing it when it changes.
- * also keep a struct for each pair of cells that stores the revision number for each. Only go through the check if the revision numbers are different than they used to be.
-
-
-? if a cell hasn't changed it's revision number since last loop through, i think we can ignore it completely? in both the inner and outer loop. should help perf.
- * actually no, i don't think this is true
-
-TODO: need to multiply distance by density i think? not real sure though... UPDATE: i did this. it wasn't the fix. should re-read paper
-* show dft of each step
-
-* in blog, show the full story of each algorithm in pictures
-
-Question:
-* the energy switch between voronoi doesn't take into account density of the points which seems wrong.
- * is the algorithm listing incorrect?
-
-TODO:
-* better anti aliased dots in output!
-* show how long it took total.
-* draw circles for points, not dots. How to specify circle size? cause it kinda depends on how many circles there are.
-- should this code be generalized to arbitrary dimensions? could maybe try it out. dunno if useful.
-- make a set of points from a procedural density function, like maybe a good blue noise DFT lol.
-- could show comparisons vs white noise (which is initial point set)
-- in the paper they rasterize literal spheres onto the image where the sample points go.  You could do that too w/ a bounding box and SDF.
-- could do a special version with no density function (should be faster??)
-- probably should convert from sRGB to linear.
-? should the num samples parameter be a multiplier for pixel count so it doesn't need to know resolution when choosing it?
-- may not need to explicitly store capacity? not sure...
 * could make a csv of swaps over time to show the convergence rate
 
+
 NOTES:
+* in blog, show the full story of the algorithms talked about in pictures
+* Talk about how to make progressive? with void and cluster idea.
 * site = a sample point in the results.  point = a density function sample point that is used to make the results.
-* brightness of resulting image is proportional to input image, not supposed to be exact
+* brightness of resulting image is proportional to input image, not exact without tuning of point count and point size
 * BNOT seems to have basically same quality result, just runs more quickly and is more difficult to implement.
-* CCVT
- * they say "assign points randomly to a cell, but make sure the cells have even weights". They don't say how they solve this "pluralized knapsack problem".
- * you can't always divide the capacity up evenly. if you have "a lot" of points (whatever that is), the total density of the image divided by cell count will be < 1, but you can have individual pixels with density of 1.
- * TODO: what did you do to solve it?
-* mention your CCVT "optimization" with cell revision numbers. retime when everything is working correctly. (before then it went from 10 seconds to 6, so 40% time savings)
-* they use white noise to generate the binary sample points.
+* mention your CCVT "optimization" with cell revision numbers. re-time when everything is working correctly. (before then it went from 10 seconds to 6, so 40% time savings)
+* they use white noise to generate the binary sample points, what?!
 * i originally thought this algorithm used float density pixel values and was getting bad results.
 * generating colors programatically: https://martin.ankerl.com/2009/12/09/how-to-create-random-colors-programmatically/
 * a white image won't give you good results for ccvt because it'll sample it with white noise and get a white noise result. you want to sample it with low discrepancy sequence to get best results, which will also give the same results for a constant color texture vs making a grid of constant density.
-? i wonder how bilinar interpolation would look, in making the original point set, instead of making it stuck to a grid?
+ * could try it out w/ halton vs white noise on a white image!
+ * this matters cause there could be images with large regions of similar colors (densities)
+? i wonder how bilinear interpolation would look, in making the original point set, instead of making it stuck to a grid?
 * the official implementation for the paper has numpoints = numsites*1024, but this is tuneable for quality vs speed
 
-Links:
-
-I resurrected the code they made to go with the paper.  It was on google code.
-https://github.com/Atrix256/ccvt
-
-
-Papers:
 
 
 
 
 
-
-
-
-==================== LANDFILL ====================
-
-Blue Noise Through Optimal Transport
-https://graphics.stanford.edu/~kbreeden/pub/dGBOD12.pdf
-What i wanted to implement initially. There are some math things I need to learn to do it though.
-CCVT (Balzer 2009) has same quality looks like, and i think is simpler, but takes longer to generate.  I think i'll go with that.
-That is "Capacity-Constrained Point Distributions: A Variant of Lloyd’s Method.
-
-
-Capacity-Constrained Point Distributions: A Variant of Lloyd’s Method:
-http://citeseerx.ist.psu.edu/viewdoc/download?doi=10.1.1.177.6047&rep=rep1&type=pdf
-yes, adapts to arbitrary density functions.
-
-Prior paper to the variant of lloyds method: CAPACITY-CONSTRAINED VORONOI DIAGRAMS IN FINITE SPACES
-https://pdfs.semanticscholar.org/50c6/47450bb252ed0a3286316b9f8e486c1da0d2.pdf
-
-Should read this from 2015.
-"A Survey of Blue-Noise Sampling and Its Applications"
-https://www.researchgate.net/publication/276513263_A_Survey_of_Blue-Noise_Sampling_and_Its_Applications
-
-
-From Bruno Levy
-https://members.loria.fr/Bruno.Levy/papers/CPD_SIGASIA_2016.pdf
-
-
-video and post release paper here (if you have acm access)
-https://dl.acm.org/doi/10.1145/1576246.1531392
 
 
 */
