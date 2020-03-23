@@ -393,7 +393,42 @@ void SaveVoronoi(const char* baseFileName, const std::vector<SiteInfo>& sitesInf
     stbi_write_png(buffer, (int)width, (int)height, 3, pixels.data(), (int)width * 3);
 }
 
-// returns true if it did any swaps
+Vec2 CalculateCentroid(const Vec2& site, const SiteInfo& siteInfo, const std::vector<Vec2>& points)
+{
+    Vec2 centerOfMass = { 0.0f, 0.0f };
+    for (size_t pointIndex : siteInfo.members)
+    {
+        Vec2 point = points[pointIndex];
+
+        // make sure the point is the closest version of the point to the site, torroidally
+        {
+            float distx = fabs(site[0] - point[0]);
+            if (distx > 0.5f)
+            {
+                if (site[0] < 0.5f)
+                    point[0] -= 1.0f;
+                else
+                    point[0] += 1.0f;
+            }
+
+            float disty = fabs(site[1] - point[1]);
+            if (disty > 0.5f)
+            {
+                if (site[1] < 0.5f)
+                    point[1] -= 1.0f;
+                else
+                    point[1] += 1.0f;
+            }
+        }
+
+        centerOfMass = centerOfMass + point;
+    }
+
+    // TODO: make sure it's in [0,1)
+
+    return centerOfMass / float(siteInfo.members.size());
+}
+
 void MakeCapacityConstraintedVoronoiTessellation(const char* baseFileName, std::mt19937& rng, const std::vector<Vec2>& points, std::vector<Vec2>& sites, size_t imageWidth, size_t imageHeight, float dotRadius, const Parameters& parameters)
 {
     // This is "Algorithm 1" in the paper, which is used for step 1 of the "Capacity-Constrained Method"
@@ -454,6 +489,8 @@ void MakeCapacityConstraintedVoronoiTessellation(const char* baseFileName, std::
             std::vector<HeapItem> Hi, Hj;
             for (size_t celli = 0; celli < cellj; ++celli)
             {
+                bool didASwap = false;
+
                 if (celli % c_numCellPairs1Percent == 0)
                 {
                     int percent = int(100.0f * float(cellPairIndex) / float(c_numCellPairs - 1));
@@ -506,8 +543,7 @@ void MakeCapacityConstraintedVoronoiTessellation(const char* baseFileName, std::
                     Hi.pop_back();
                     Hj.pop_back();
 
-                    sitesInfo[celli].revisionNumber++;
-                    sitesInfo[cellj].revisionNumber++;
+                    didASwap = true;
 
                     // swap membership to decrease overall energy
                     for (size_t& pixelIndex : sitesInfo[celli].members)
@@ -528,13 +564,23 @@ void MakeCapacityConstraintedVoronoiTessellation(const char* baseFileName, std::
                     }
 
                     swapCount++;
-
-                    stable = false;
                 }
 
-                // update revision numbers in case they changed
-                cellPairRevisionNumbers.revisionNumber_i = sitesInfo[celli].revisionNumber;
-                cellPairRevisionNumbers.revisionNumber_j = sitesInfo[cellj].revisionNumber;
+                if (didASwap)
+                {
+                    stable = false;
+
+                    // update revision numbers
+                    sitesInfo[celli].revisionNumber++;
+                    sitesInfo[cellj].revisionNumber++;
+
+                    cellPairRevisionNumbers.revisionNumber_i = sitesInfo[celli].revisionNumber;
+                    cellPairRevisionNumbers.revisionNumber_j = sitesInfo[cellj].revisionNumber;
+
+                    // move the sites to the centroid of the cell
+                    sites[celli] = CalculateCentroid(sites[celli], sitesInfo[celli], points);
+                    sites[cellj] = CalculateCentroid(sites[cellj], sitesInfo[cellj], points);
+                }
             }
         }
 
@@ -542,48 +588,6 @@ void MakeCapacityConstraintedVoronoiTessellation(const char* baseFileName, std::
 
         if (parameters.debug.showVoronoiEvolution)
             SaveVoronoi(baseFileName, sitesInfo, sites, points, imageWidth, imageHeight, dotRadius, loopCount);
-    }
-
-    // TODO: do this for each cell when they have swaps occur
-    // Now move each point to the center of mass of all the points in it's Voronoi diagram
-    {
-        for (size_t cellIndex = 0; cellIndex < c_numCells; ++cellIndex)
-        {
-            float totalWeight = 0.0f;
-            Vec2 centerOfMass = { 0.0f, 0.0f };
-            for (size_t pointIndex : sitesInfo[cellIndex].members)
-            {
-                Vec2 point = points[pointIndex];
-
-                // make sure the point is the closest version of the point to the site, torroidally
-                {
-                    float distx = fabs(sites[cellIndex][0] - point[0]);
-                    if (distx > 0.5f)
-                    {
-                        if (sites[cellIndex][0] < 0.5f)
-                            point[0] -= 1.0f;
-                        else
-                            point[0] += 1.0f;
-                    }
-
-                    float disty = fabs(sites[cellIndex][1] - point[1]);
-                    if (disty > 0.5f)
-                    {
-                        if (sites[cellIndex][1] < 0.5f)
-                            point[1] -= 1.0f;
-                        else
-                            point[1] += 1.0f;
-                    }
-                }
-
-                centerOfMass = centerOfMass + point;
-                totalWeight += 1.0f;
-            }
-
-            centerOfMass = centerOfMass / totalWeight;
-
-            sites[cellIndex] = centerOfMass;
-        }
     }
 }
 
@@ -676,7 +680,6 @@ void GenerateBlueNoisePoints(const char* baseFileName, const size_t c_numPoints,
 int main(int argc, char** argv)
 {
     // TODO: puppysmall.points.png has lines in it. quantization / conversion problem?
-    // TODO: does the real ccvt code go until convergence?
     // TODO: real ccvt code has numPoints = numSites * 1024;
     // TODO: uniform test failed. maybe has to do with torroidal centroid?
     // TODO: special mode for vornoi in classic mode where it loops through pixels instead of doing floating point conversion stuff?
