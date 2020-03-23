@@ -526,6 +526,8 @@ void MakeCapacityConstraintedVoronoiTessellation(std::mt19937& rng, const std::v
         loopCount++;
 
         int swapCount = 0;
+        int unstableCellPairCount = 0;
+        int cellPairCheckCount = 0;
 
         struct HeapItem
         {
@@ -558,6 +560,7 @@ void MakeCapacityConstraintedVoronoiTessellation(std::mt19937& rng, const std::v
                 cellPairIndex++;
                 if (cellPairRevisionNumbers.revisionNumber_i == sitesInfo[celli].revisionNumber && cellPairRevisionNumbers.revisionNumber_j == sitesInfo[cellj].revisionNumber)
                     continue;
+                cellPairCheckCount++;
 
                 // for each point belonging to cell i, calculate how much energy would be saved by switching to the other cell
                 size_t itemIndex = 0;
@@ -631,17 +634,20 @@ void MakeCapacityConstraintedVoronoiTessellation(std::mt19937& rng, const std::v
                     sitesInfo[celli].revisionNumber++;
                     sitesInfo[cellj].revisionNumber++;
 
-                    cellPairRevisionNumbers.revisionNumber_i = sitesInfo[celli].revisionNumber;
-                    cellPairRevisionNumbers.revisionNumber_j = sitesInfo[cellj].revisionNumber;
-
                     // move the sites to the centroid of the cell
                     sites[celli] = CalculateCentroid(sites[celli], sitesInfo[celli], points);
                     sites[cellj] = CalculateCentroid(sites[cellj], sitesInfo[cellj], points);
+
+                    unstableCellPairCount++;
                 }
+
+                // update revision number whether it changed or not
+                cellPairRevisionNumbers.revisionNumber_i = sitesInfo[celli].revisionNumber;
+                cellPairRevisionNumbers.revisionNumber_j = sitesInfo[cellj].revisionNumber;
             }
         }
 
-        printf("\r                                     \riteration %i: %i swaps\n", loopCount, swapCount);
+        printf("\r                                     \riteration %i: %i swaps, %i unstable cell pairs, %i cell pairs checked\n", loopCount, swapCount, unstableCellPairCount, cellPairCheckCount);
 
         // Save the state of things at the end of this iteration
         {
@@ -684,28 +690,14 @@ void GeneratePointsFromFunction(std::vector<Vec2>& points, size_t c_numPoints, s
 
 void GeneratePointsFromImage(const DensityImage& densityImage, std::vector<Vec2>& points, size_t c_numPoints, std::mt19937& rng)
 {
-    // TODO: make this use GeneratePointsFromFunction!
-
-    std::uniform_real_distribution<float> distDensity(0.0f, 1.0f);
-    std::uniform_int_distribution<int> distWidth(0, densityImage.width - 1);
-    std::uniform_int_distribution<int> distHeight(0, densityImage.height - 1);
-
-    while (points.size() < c_numPoints)
-    {
-        // TODO: should try using a low discrepancy sampling here - like blue noise or sobol or something. maybe even regular sampling?
-        // TODO: maybe do bilinear interpolation? that could get rid of the puppysmall.in.png line problems?
-
-        int x = distWidth(rng);
-        int y = distHeight(rng);
-
-        if (distDensity(rng) > densityImage.GetDensity(x, y))
-            continue;
-
-        float u = float(x) / float(densityImage.width - 1);
-        float v = float(y) / float(densityImage.height - 1);
-
-        points.push_back({ u, v });
-    }
+    GeneratePointsFromFunction(points, c_numPoints, rng,
+        [&] (float u, float v)
+        {
+            int x = (int)Clamp(u * float(densityImage.width), 0.0f, float(densityImage.width - 1));
+            int y = (int)Clamp(v * float(densityImage.height), 0.0f, float(densityImage.height - 1));
+            return densityImage.GetDensity(x, y);
+        }
+    );
 }
 
 template <typename GENERATE_POINTS_LAMBDA>
@@ -757,13 +749,11 @@ void GenerateBlueNoisePoints(const Parameters& params, const GENERATE_POINTS_LAM
 
 int main(int argc, char** argv)
 {
-    // TODO: verify that the early out is working, for not checking things for swapping that don't need it.
-
-    bool doTest_Uniform64 = false;
-    bool doTest_Uniform1k = false;
-    bool doTest_Procedural = false;
-    bool doTest_PuppySmall = false;
-    bool doTest_Puppy = false;
+    bool doTest_Uniform64 = true;
+    bool doTest_Uniform1k = true;
+    bool doTest_Procedural = true;
+    bool doTest_PuppySmall = true;
+    bool doTest_Puppy = true;
     bool doTest_Mountain = true;
 
     // This is the "classic" algorithm making regular blue noise.
@@ -960,6 +950,8 @@ int main(int argc, char** argv)
  DFT! compare with mitchell's best candidate.
 
  Talk about how to make progressive?
+
+ * revision number thing doesn't seem to be working! if we can fix that, it'd be way better. could do more points that are smaller for mountains.
 
 Currently:
  * want to visualize the voronoi that goes with each point set, but also for debugging probably want to look at how it evolves.
