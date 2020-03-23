@@ -6,6 +6,7 @@
 #include <random>
 #include <stdio.h>
 #include <vector>
+#include "dft.h"
 
 #define STB_IMAGE_IMPLEMENTATION
 #include "stb_image.h"
@@ -16,6 +17,8 @@
 #define DETERMINISTIC() true
 
 static const float c_goldenRatioConjugate = 0.61803398875f;  // 1 / goldenRatio
+
+static const float c_pi = 3.14159265359f;
 
 static const float c_antiAliasWidth = 1.2f;
 
@@ -103,11 +106,6 @@ inline float SmoothStep(float value, float min, float max)
     return 3.0f * x * x - 2.0f * x * x * x;
 }
 
-float Lerp(float a, float b, float t)
-{
-    return a * (1.0f - t) + b * t;
-}
-
 float LinearToSRGB(float x)
 {
     x = Clamp(x, 0.0f, 1.0f);
@@ -154,12 +152,24 @@ Vec3 IndexSVToRGB(size_t index, float s, float v)
 
 struct Parameters
 {
-    struct Debug
-    {
-        bool showVoronoiEvolution = false;
-    };
+    // Main functionality parameters
+    const char* baseFileName = nullptr;
+    size_t numSites = 1000;
+    size_t numPoints = numSites * 1024;
+    size_t siteImageWidth = 256;
+    size_t siteImageHeight = 256;
+    float siteImageDotRadius = 1.0f;
 
-    Debug debug;
+    // Debug parameters
+    size_t DFTImageWidth = 256;
+    size_t DFTImageHeight = 256;
+
+    bool showVoronoiEvolution = false;
+    bool showDFTEvolution = false;
+    bool showSiteEvolution = false;
+
+    bool showVoronoiFinal = true;
+    bool showDFTFinal = true;
 };
 
 struct DensityImage
@@ -352,7 +362,7 @@ void SaveVoronoi(const char* baseFileName, const std::vector<SiteInfo>& sitesInf
     siteIndex = 0;
     for (const Vec2& point : sites)
     {
-        const float c_dotRadius = dotRadius;
+        const float c_dotRadius = dotRadius*2;
 
         Vec3 color = IndexSVToRGB(siteIndex, 0.9f, 0.95f);
         unsigned char R = (unsigned char)Clamp(LinearToSRGB(color[0]) * 256.0f, 0.0f, 255.0f);
@@ -393,6 +403,34 @@ void SaveVoronoi(const char* baseFileName, const std::vector<SiteInfo>& sitesInf
     stbi_write_png(buffer, (int)width, (int)height, 3, pixels.data(), (int)width * 3);
 }
 
+void SaveDFT(const char* baseFileName, const std::vector<Vec2>& points, size_t width, size_t height, size_t index)
+{
+    std::vector<float> pointsForDFT(width * height, 0.0f);
+
+    for (const Vec2& point : points)
+    {
+        int x = Clamp<int>(int(point[0] * float(width)), 0, (int)width - 1);
+        int y = Clamp<int>(int(point[1] * float(height)), 0, (int)height - 1);
+
+        pointsForDFT[y * width + x] = 1.0f;
+    }
+
+    std::vector<float> DFTMagnitudes;
+    DFTPeriodogram(pointsForDFT, DFTMagnitudes, width, height);
+
+    float maxMag = GetMaxMagnitudeDFT(DFTMagnitudes);
+    for (float& f : DFTMagnitudes)
+        f /= maxMag;
+
+    std::vector<unsigned char> DFTPixels(width * height);
+    for (size_t index = 0; index < width * height; ++index)
+        DFTPixels[index] = (unsigned char)Clamp(DFTMagnitudes[index] * 256.0f, 0.0f, 255.0f);
+
+    char buffer[256];
+    sprintf_s(buffer, "out/%s.DFT_%zu.png", baseFileName, index);
+    stbi_write_png(buffer, (int)width, (int)height, 1, DFTPixels.data(), (int)width);
+}
+
 Vec2 CalculateCentroid(const Vec2& site, const SiteInfo& siteInfo, const std::vector<Vec2>& points)
 {
     Vec2 centerOfMass = { 0.0f, 0.0f };
@@ -424,16 +462,19 @@ Vec2 CalculateCentroid(const Vec2& site, const SiteInfo& siteInfo, const std::ve
         centerOfMass = centerOfMass + point;
     }
 
-    // TODO: make sure it's in [0,1)
+    centerOfMass = centerOfMass / float(siteInfo.members.size());
+    centerOfMass[0] = Fract(centerOfMass[0]);
+    centerOfMass[1] = Fract(centerOfMass[1]);
 
-    return centerOfMass / float(siteInfo.members.size());
+    return centerOfMass;
 }
 
-void MakeCapacityConstraintedVoronoiTessellation(const char* baseFileName, std::mt19937& rng, const std::vector<Vec2>& points, std::vector<Vec2>& sites, size_t imageWidth, size_t imageHeight, float dotRadius, const Parameters& parameters)
+void MakeCapacityConstraintedVoronoiTessellation(std::mt19937& rng, const std::vector<Vec2>& points, std::vector<Vec2>& sites, const Parameters& params)
 {
     // This is "Algorithm 1" in the paper, which is used for step 1 of the "Capacity-Constrained Method"
 
     const size_t c_numCells = sites.size();
+    char buffer[4096];
 
     // Make a randomized map of points to sites. Each site must have the same number of points.
     std::vector<SiteInfo> sitesInfo(c_numCells);
@@ -446,8 +487,23 @@ void MakeCapacityConstraintedVoronoiTessellation(const char* baseFileName, std::
             sitesInfo[index % sites.size()].members.push_back(pointIndices[index]);
     }
 
-    if (parameters.debug.showVoronoiEvolution)
-        SaveVoronoi(baseFileName, sitesInfo, sites, points, imageWidth, imageHeight, dotRadius, 0);
+    // Save the initial state of things
+    {
+        if (params.showSiteEvolution)
+        {
+            sprintf_s(buffer, "out/%s.%i.png", params.baseFileName, 0);
+
+            DensityImage image;
+            image.MakeImageFromPoints((int)params.siteImageWidth, (int)params.siteImageHeight, sites, params.siteImageDotRadius);
+            image.Save(buffer);
+        }
+
+        if (params.showSiteEvolution)
+            SaveVoronoi(params.baseFileName, sitesInfo, sites, points, params.siteImageWidth, params.siteImageHeight, params.siteImageDotRadius, 0);
+
+        if (params.showDFTEvolution)
+            SaveDFT(params.baseFileName, sites, params.DFTImageWidth, params.DFTImageHeight, 0);
+    }
 
     // The sites now have equal capacity, but they contain random pixels - not the pixels they should.
     // We now look at each pair of Voronoi cells and see if they have any pixels that want to swap for better results.
@@ -503,32 +559,33 @@ void MakeCapacityConstraintedVoronoiTessellation(const char* baseFileName, std::
                 if (cellPairRevisionNumbers.revisionNumber_i == sitesInfo[celli].revisionNumber && cellPairRevisionNumbers.revisionNumber_j == sitesInfo[cellj].revisionNumber)
                     continue;
 
-                Hi.clear();
-                Hj.clear();
-
                 // for each point belonging to cell i, calculate how much energy would be saved by switching to the other cell
+                size_t itemIndex = 0;
+                Hi.resize(sitesInfo[celli].members.size());
                 for (size_t pointIndex : sitesInfo[celli].members)
                 {
                     const Vec2& point = points[pointIndex];
 
-                    HeapItem heapItem;
-                    heapItem.key = ToroidalDistanceSquared(point, points[celli]) - ToroidalDistanceSquared(point, points[cellj]);
+                    HeapItem& heapItem = Hi[itemIndex];
+                    heapItem.key = ToroidalDistanceSquared(point, sites[celli]) - ToroidalDistanceSquared(point, sites[cellj]);
                     heapItem.pointIndex = pointIndex;
 
-                    Hi.push_back(heapItem);
+                    itemIndex++;
                 }
                 std::make_heap(Hi.begin(), Hi.end());
 
                 // for each point belonging to cell j, calculate how much energy would be saved by switching to the other cell
+                itemIndex = 0;
+                Hj.resize(sitesInfo[cellj].members.size());
                 for (size_t pointIndex : sitesInfo[cellj].members)
                 {
                     const Vec2& point = points[pointIndex];
 
-                    HeapItem heapItem;
-                    heapItem.key = ToroidalDistanceSquared(point, points[cellj]) - ToroidalDistanceSquared(point, points[celli]);
+                    HeapItem& heapItem = Hj[itemIndex];
+                    heapItem.key = ToroidalDistanceSquared(point, sites[cellj]) - ToroidalDistanceSquared(point, sites[celli]);
                     heapItem.pointIndex = pointIndex;
 
-                    Hj.push_back(heapItem);
+                    itemIndex++;
                 }
                 std::make_heap(Hj.begin(), Hj.end());
 
@@ -584,15 +641,51 @@ void MakeCapacityConstraintedVoronoiTessellation(const char* baseFileName, std::
             }
         }
 
-        printf("\r                                     \riteration %i 100%% - %i swaps\n", loopCount, swapCount);
+        printf("\r                                     \riteration %i: %i swaps\n", loopCount, swapCount);
 
-        if (parameters.debug.showVoronoiEvolution)
-            SaveVoronoi(baseFileName, sitesInfo, sites, points, imageWidth, imageHeight, dotRadius, loopCount);
+        // Save the state of things at the end of this iteration
+        {
+            if (params.showSiteEvolution)
+            {
+                sprintf_s(buffer, "out/%s.%i.png", params.baseFileName, loopCount);
+
+                DensityImage image;
+                image.MakeImageFromPoints((int)params.siteImageWidth, (int)params.siteImageHeight, sites, params.siteImageDotRadius);
+                image.Save(buffer);
+            }
+
+            if (params.showVoronoiEvolution || (params.showVoronoiFinal && stable))
+                SaveVoronoi(params.baseFileName, sitesInfo, sites, points, params.siteImageWidth, params.siteImageHeight, params.siteImageDotRadius, loopCount);
+
+            if (params.showDFTEvolution || (params.showDFTFinal && stable))
+                SaveDFT(params.baseFileName, sites, params.DFTImageWidth, params.DFTImageHeight, loopCount);
+        }
+    }
+}
+
+template <typename LAMBDA>
+void GeneratePointsFromFunction(std::vector<Vec2>& points, size_t c_numPoints, std::mt19937& rng, const LAMBDA& lambda)
+{
+    std::uniform_real_distribution<float> dist(0.0f, 1.0f);
+
+    while (points.size() < c_numPoints)
+    {
+        // TODO: should try using a low discrepancy sampling here - like blue noise or sobol or something. maybe even regular sampling?
+
+        float x = dist(rng);
+        float y = dist(rng);
+
+        if (dist(rng) > lambda(x, y))
+            continue;
+
+        points.push_back({ x, y });
     }
 }
 
 void GeneratePointsFromImage(const DensityImage& densityImage, std::vector<Vec2>& points, size_t c_numPoints, std::mt19937& rng)
 {
+    // TODO: make this use GeneratePointsFromFunction!
+
     std::uniform_real_distribution<float> distDensity(0.0f, 1.0f);
     std::uniform_int_distribution<int> distWidth(0, densityImage.width - 1);
     std::uniform_int_distribution<int> distHeight(0, densityImage.height - 1);
@@ -600,6 +693,7 @@ void GeneratePointsFromImage(const DensityImage& densityImage, std::vector<Vec2>
     while (points.size() < c_numPoints)
     {
         // TODO: should try using a low discrepancy sampling here - like blue noise or sobol or something. maybe even regular sampling?
+        // TODO: maybe do bilinear interpolation? that could get rid of the puppysmall.in.png line problems?
 
         int x = distWidth(rng);
         int y = distHeight(rng);
@@ -615,19 +709,21 @@ void GeneratePointsFromImage(const DensityImage& densityImage, std::vector<Vec2>
 }
 
 template <typename GENERATE_POINTS_LAMBDA>
-void GenerateBlueNoisePoints(const char* baseFileName, const size_t c_numPoints, const size_t c_numSites, const int c_siteImageWidth, const int c_siteImageHeight, float dotRadius, const Parameters& params, const GENERATE_POINTS_LAMBDA& generatePointsLambda)
+void GenerateBlueNoisePoints(const Parameters& params, const GENERATE_POINTS_LAMBDA& generatePointsLambda)
 {
-    ScopedTimer timer(baseFileName);
+    ScopedTimer timer(params.baseFileName);
+
+    printf("%s...\n", params.baseFileName);
 
     // get a random number generator
     std::mt19937 rng = GetRNG(0);
 
     // Initialize point locations conforming to the density function
     std::vector<Vec2> points;
-    generatePointsLambda(points, c_numPoints, rng);
+    generatePointsLambda(points, params.numPoints, rng);
 
     // initialize site locations
-    std::vector<Vec2> sites(c_numSites);
+    std::vector<Vec2> sites(params.numSites);
     {
         std::uniform_real_distribution<float> dist(0.0f, 1.0f);
         for (Vec2& s : sites)
@@ -637,106 +733,140 @@ void GenerateBlueNoisePoints(const char* baseFileName, const size_t c_numPoints,
         }
     }
 
-    // save an image of the initial points generated
+    // save an image of the initial points generated. This is the density distribution function and is what the algorithm uses as input along
+    // with the initial site locations.
     char buffer[4096];
     {
-        sprintf_s(buffer, "out/%s.points.png", baseFileName);
-        printf("Saving %s\n\n", buffer);
-
+        sprintf_s(buffer, "out/%s.in.png", params.baseFileName);
         DensityImage image;
-        image.MakeImageFromPoints(c_siteImageWidth, c_siteImageHeight, points, dotRadius);
-        image.Save(buffer);
-    }
-
-    // save an image of the initial site locations
-    {
-        sprintf_s(buffer, "out/%s.0.png", baseFileName);
-        printf("Saving %s\n\n", buffer);
-
-        DensityImage image;
-        image.MakeImageFromPoints(c_siteImageWidth, c_siteImageHeight, sites, dotRadius);
+        image.MakeImageFromPoints((int)params.siteImageWidth, (int)params.siteImageHeight, points, params.siteImageDotRadius);
         image.Save(buffer);
     }
 
     // iteratively optimize the points into blue noise
+    MakeCapacityConstraintedVoronoiTessellation(rng, points, sites, params);
+
+    // save an image of the final site locations.  This is the results
     {
-        MakeCapacityConstraintedVoronoiTessellation(baseFileName, rng, points, sites, c_siteImageWidth, c_siteImageHeight, dotRadius, params);
-
-        // TODO: move this into MakeCapacityConstraintedVoronoiTessellation() i guess
-        int iteration = 1;
-        sprintf_s(buffer, "out/%s.%i.png", baseFileName, iteration);
-        printf("Saving %s\n\n", buffer);
-
+        sprintf_s(buffer, "out/%s.out.png", params.baseFileName);
         DensityImage image;
-        image.MakeImageFromPoints(c_siteImageWidth, c_siteImageHeight, sites, dotRadius);
+        image.MakeImageFromPoints((int)params.siteImageWidth, (int)params.siteImageHeight, sites, params.siteImageDotRadius);
         image.Save(buffer);
     }
-
-    // TODO: write the final points out to a csv, or txt file, or .h or something?
-    // TODO: DFT of each step to see it evolving
-    // TODO: maybe show how to do it for a mathematical density function (including one that returns constant density)
 }
 
 int main(int argc, char** argv)
 {
-    // TODO: puppysmall.points.png has lines in it. quantization / conversion problem?
-    // TODO: real ccvt code has numPoints = numSites * 1024;
-    // TODO: uniform test failed. maybe has to do with torroidal centroid?
-    // TODO: special mode for vornoi in classic mode where it loops through pixels instead of doing floating point conversion stuff?
+    // TODO: verify that the early out is working, for not checking things for swapping that don't need it.
 
-    // This is the "classic" algorithm
+    bool doTest_Uniform64 = false;
+    bool doTest_Uniform1k = false;
+    bool doTest_Procedural = false;
+    bool doTest_PuppySmall = false;
+    bool doTest_Puppy = false;
+    bool doTest_Mountain = true;
+
+    // This is the "classic" algorithm making regular blue noise.
+    // The "classic" algorithm works off of pixels, and this would probably be more efficiently implemented that way instead
+    // of having sparse points.
     {
-        static const size_t c_gridSize = 256;
+        if (doTest_Uniform64)
+        {
+            static const size_t c_gridSize = 256;
 
-        static const char* baseFileName = "uniform";
-        static const size_t c_numSites = 10;
-        static const size_t c_numPoints = c_gridSize * c_gridSize;
-        static const size_t c_imageSize = c_gridSize;
-        static const float c_dotRadius = 1.0f;
+            Parameters params;
+            params.baseFileName = "uniform64";
+            params.numSites = 64;
+            params.numPoints = c_gridSize * c_gridSize;
+            params.siteImageWidth = params.siteImageHeight = c_gridSize;
+            params.DFTImageWidth = params.DFTImageHeight = 32;
 
+            GenerateBlueNoisePoints(params,
+                [&](std::vector<Vec2>& points, size_t numPoints, std::mt19937& rng)
+                {
+                    std::uniform_real_distribution<float> dist;
+                    points.resize(0);
+                    points.reserve(numPoints);
+
+                    size_t n = (size_t)sqrt(float(numPoints));
+                    for (size_t iy = 0; iy < n; ++iy)
+                        for (size_t ix = 0; ix < n; ++ix)
+                            points.push_back({ float(ix) / float(n), float(iy) / float(n) });
+                }
+            );
+        }
+
+        if (doTest_Uniform1k)
+        {
+            static const size_t c_gridSize = 256;
+
+            Parameters params;
+            params.baseFileName = "uniform1k";
+            params.numSites = 1024;
+            params.numPoints = c_gridSize * c_gridSize;
+            params.siteImageWidth = params.siteImageHeight = c_gridSize;
+            params.DFTImageWidth = params.DFTImageHeight = 256;
+
+            GenerateBlueNoisePoints(params,
+                [&](std::vector<Vec2>& points, size_t numPoints, std::mt19937& rng)
+                {
+                    std::uniform_real_distribution<float> dist;
+                    points.resize(0);
+                    points.reserve(numPoints);
+
+                    size_t n = (size_t)sqrt(float(numPoints));
+                    for (size_t iy = 0; iy < n; ++iy)
+                        for (size_t ix = 0; ix < n; ++ix)
+                            points.push_back({ float(ix) / float(n), float(iy) / float(n) });
+                }
+            );
+        }
+    }
+
+    // Procedural density function
+    if (doTest_Procedural)
+    {
         Parameters params;
-        params.debug.showVoronoiEvolution = true;
+        params.baseFileName = "procedural";
+        params.numSites = 1000;
+        params.numPoints = params.numSites * 100;
 
-        GenerateBlueNoisePoints(baseFileName, c_numPoints, c_numSites, c_imageSize, c_imageSize, c_dotRadius, params,
+        GenerateBlueNoisePoints(params,
             [&](std::vector<Vec2>& points, size_t numPoints, std::mt19937& rng)
             {
-                std::uniform_real_distribution<float> dist;
-                points.resize(0);
-                points.reserve(numPoints);
-
-                size_t n = (size_t)sqrt(float(numPoints));
-                for (size_t iy = 0; iy < n; ++iy)
-                    for (size_t ix = 0; ix < n; ++ix)
-                        points.push_back({ float(ix) / float(n), float(iy) / float(n) });
+                GeneratePointsFromFunction(points, numPoints, rng,
+                    [](float x, float y)
+                    {
+                        return (sin(x * 2.0f * c_pi * 4.0f) * 0.5f + 0.5f) * (sin(y * 2.0f * c_pi * 4.0f) * 0.5f + 0.5f);
+                    }
+                );
             }
         );
     }
 
-    // TODO: temp!
-    return 0;
-
+    if (doTest_PuppySmall)
     {
-        static const char* baseFileName = "puppysmall";
-        static const size_t c_numSites = 1000;
-        static const size_t c_numPoints = c_numSites * 10;// *1024;
-        static const size_t c_imageSize = 256;
-        static const float c_dotRadius = 1.0f;
-
         Parameters params;
+        params.baseFileName = "puppysmall";
+        params.numSites = 1024;
+        params.numPoints = params.numSites * 100;
+        params.siteImageDotRadius = 0.5f;
 
         // load the image if we can
         char buffer[1024];
         DensityImage densityImage;
-        sprintf_s(buffer, "images/%s.png", baseFileName);
+        sprintf_s(buffer, "images/%s.png", params.baseFileName);
         if (!densityImage.Load(buffer))
             return 1;
 
+        params.siteImageWidth = densityImage.width;
+        params.siteImageHeight = densityImage.height;
+
         // save the starting image (we made it greyscale)
-        sprintf_s(buffer, "out/%s.png", baseFileName);
-        printf("Saving starting image as %s\n\n", buffer);
+        sprintf_s(buffer, "out/%s.source.png", params.baseFileName);
         densityImage.Save(buffer);
 
-        GenerateBlueNoisePoints(baseFileName, c_numPoints, c_numSites, c_imageSize, c_imageSize, c_dotRadius, params,
+        GenerateBlueNoisePoints(params,
             [&](std::vector<Vec2>& points, size_t numPoints, std::mt19937& rng)
             {
                 GeneratePointsFromImage(densityImage, points, numPoints, rng);
@@ -744,14 +874,46 @@ int main(int argc, char** argv)
         );
     }
 
+    if(doTest_Puppy)
+    {
+        Parameters params;
+        params.baseFileName = "puppy";
+        params.numSites = 1024;
+        params.numPoints = params.numSites * 100;
+        params.siteImageDotRadius = 2.0f;
+
+        // load the image if we can
+        char buffer[1024];
+        DensityImage densityImage;
+        sprintf_s(buffer, "images/%s.png", params.baseFileName);
+        if (!densityImage.Load(buffer))
+            return 1;
+
+        params.siteImageWidth = densityImage.width;
+        params.siteImageHeight = densityImage.height;
+
+        // save the starting image (we made it greyscale)
+        sprintf_s(buffer, "out/%s.source.png", params.baseFileName);
+        printf("Saving starting image as %s\n\n", buffer);
+        densityImage.Save(buffer);
+
+        GenerateBlueNoisePoints(params,
+            [&](std::vector<Vec2>& points, size_t numPoints, std::mt19937& rng)
+            {
+                GeneratePointsFromImage(densityImage, points, numPoints, rng);
+            }
+        );
+    }
+
+    if (doTest_Mountain)
     {
         static const char* baseFileName = "mountains";
-        static const size_t c_numSites = 10000;
-        static const size_t c_numPoints = c_numSites * 10;// *1024;
-        static const size_t c_imageSize = 512;
-        static const float c_dotRadius = 1.0f;
 
         Parameters params;
+        params.baseFileName = "mountains";
+        params.numSites = 10240;
+        params.numPoints = params.numSites * 10;
+        params.siteImageDotRadius = 5.0f;
 
         // load the image if we can
         char buffer[1024];
@@ -760,41 +922,14 @@ int main(int argc, char** argv)
         if (!densityImage.Load(buffer))
             return 1;
 
-        // save the starting image (we made it greyscale)
-        sprintf_s(buffer, "out/%s.png", baseFileName);
-        printf("Saving starting image as %s\n\n", buffer);
-        densityImage.Save(buffer);
-
-        GenerateBlueNoisePoints(baseFileName, c_numPoints, c_numSites, c_imageSize, c_imageSize, c_dotRadius, params,
-            [&](std::vector<Vec2>& points, size_t numPoints, std::mt19937& rng)
-            {
-                GeneratePointsFromImage(densityImage, points, numPoints, rng);
-            }
-        );
-    }
-
-    {
-        static const char* baseFileName = "puppy";
-        static const size_t c_numSites = 10000;
-        static const size_t c_numPoints = c_numSites * 10;// *1024;
-        static const size_t c_imageSize = 512;
-        static const float c_dotRadius = 1.0f;
-
-        Parameters params;
-
-        // load the image if we can
-        char buffer[1024];
-        DensityImage densityImage;
-        sprintf_s(buffer, "images/%s.png", baseFileName);
-        if (!densityImage.Load(buffer))
-            return 1;
+        params.siteImageWidth = densityImage.width;
+        params.siteImageHeight = densityImage.height;
 
         // save the starting image (we made it greyscale)
         sprintf_s(buffer, "out/%s.png", baseFileName);
-        printf("Saving starting image as %s\n\n", buffer);
         densityImage.Save(buffer);
 
-        GenerateBlueNoisePoints(baseFileName, c_numPoints, c_numSites, c_imageSize, c_imageSize, c_dotRadius, params,
+        GenerateBlueNoisePoints(params,
             [&](std::vector<Vec2>& points, size_t numPoints, std::mt19937& rng)
             {
                 GeneratePointsFromImage(densityImage, points, numPoints, rng);
@@ -907,6 +1042,7 @@ TODO:
 - probably should convert from sRGB to linear.
 ? should the num samples parameter be a multiplier for pixel count so it doesn't need to know resolution when choosing it?
 - may not need to explicitly store capacity? not sure...
+* could make a csv of swaps over time to show the convergence rate
 
 NOTES:
 * site = a sample point in the results.  point = a density function sample point that is used to make the results.
@@ -921,6 +1057,8 @@ NOTES:
 * i originally thought this algorithm used float density pixel values and was getting bad results.
 * generating colors programatically: https://martin.ankerl.com/2009/12/09/how-to-create-random-colors-programmatically/
 * a white image won't give you good results for ccvt because it'll sample it with white noise and get a white noise result. you want to sample it with low discrepancy sequence to get best results, which will also give the same results for a constant color texture vs making a grid of constant density.
+? i wonder how bilinar interpolation would look, in making the original point set, instead of making it stuck to a grid?
+* the official implementation for the paper has numpoints = numsites*1024, but this is tuneable for quality vs speed
 
 Links:
 

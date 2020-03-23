@@ -6,5 +6,32 @@
   <ItemGroup>
     <ClInclude Include="stb_image.h" />
     <ClInclude Include="stb_image_write.h" />
+    <ClInclude Include="dft.h" />
+    <ClInclude Include="simple_fft\check_fft.hpp">
+      <Filter>simple_fft</Filter>
+    </ClInclude>
+    <ClInclude Include="simple_fft\copy_array.hpp">
+      <Filter>simple_fft</Filter>
+    </ClInclude>
+    <ClInclude Include="simple_fft\error_handling.hpp">
+      <Filter>simple_fft</Filter>
+    </ClInclude>
+    <ClInclude Include="simple_fft\fft.h">
+      <Filter>simple_fft</Filter>
+    </ClInclude>
+    <ClInclude Include="simple_fft\fft.hpp">
+      <Filter>simple_fft</Filter>
+    </ClInclude>
+    <ClInclude Include="simple_fft\fft_impl.hpp">
+      <Filter>simple_fft</Filter>
+    </ClInclude>
+    <ClInclude Include="simple_fft\fft_settings.h">
+      <Filter>simple_fft</Filter>
+    </ClInclude>
+  </ItemGroup>
+  <ItemGroup>
+    <Filter Include="simple_fft">
+      <UniqueIdentifier>{7b79bd26-22b1-4ff4-a03d-d68ae0219218}</UniqueIdentifier>
+    </Filter>
   </ItemGroup>
 </Project>

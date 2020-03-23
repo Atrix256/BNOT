@@ -141,6 +141,14 @@
     <ClCompile Include="main.cpp" />
   </ItemGroup>
   <ItemGroup>
+    <ClInclude Include="dft.h" />
+    <ClInclude Include="simple_fft\check_fft.hpp" />
+    <ClInclude Include="simple_fft\copy_array.hpp" />
+    <ClInclude Include="simple_fft\error_handling.hpp" />
+    <ClInclude Include="simple_fft\fft.h" />
+    <ClInclude Include="simple_fft\fft.hpp" />
+    <ClInclude Include="simple_fft\fft_impl.hpp" />
+    <ClInclude Include="simple_fft\fft_settings.h" />
     <ClInclude Include="stb_image.h" />
     <ClInclude Include="stb_image_write.h" />
   </ItemGroup>
