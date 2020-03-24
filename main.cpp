@@ -27,8 +27,19 @@ static const float c_pi = 3.14159265359f;
 
 static const float c_antiAliasWidth = 1.2f;
 
+std::vector<float> g_blueNoisePixels;
+int g_blueNoiseWidth = 0;
+int g_blueNoiseHeight = 0;
+
 using Vec2 = std::array<float, 2>;
 using Vec3 = std::array<float, 3>;
+
+enum class SampleGeneration
+{
+    WhiteNoise,
+    Halton23,
+    R2
+};
 
 struct ScopedTimer
 {
@@ -60,6 +71,22 @@ float VanDerCorput(size_t index, size_t base)
         index = index / base;
         denominator *= base;
     }
+    return ret;
+}
+
+Vec2 R2(size_t index)
+{
+    // Generalized golden ratio to 2d.
+    // Solution to x^3 = x + 1
+    // AKA plastic constant.
+    // from http://extremelearning.com.au/unreasonable-effectiveness-of-quasirandom-sequences/
+    float g = 1.32471795724474602596f;
+    float a1 = 1.0f / g;
+    float a2 = 1.0f / (g * g);
+
+    Vec2 ret;
+    ret[0] = fmodf(0.5f + a1 * float(index), 1.0f);
+    ret[1] = fmodf(0.5f + a2 * float(index), 1.0f);
     return ret;
 }
 
@@ -604,6 +631,12 @@ void MakeCapacityConstraintedVoronoiTessellation(std::mt19937& rng, const std::v
     const size_t c_numCellPairs1Percent = std::max<size_t>(size_t(float(c_numCellPairs) / float(100.0f)), 1);
     std::vector<CellPairRevisionNumbers> cellPairRevisions(c_numCellPairs);
 
+    // write the header of the csv file that shows convergence over time
+    sprintf_s(buffer, "out/%s.csv", params.baseFileName);
+    FILE* file = nullptr;
+    fopen_s(&file, buffer, "w+t");
+    fprintf(file, "\"Iteration\",\"Swap Count\"\n");
+
     bool stable = false;
     int loopCount = 0;
     while (!stable)
@@ -735,6 +768,8 @@ void MakeCapacityConstraintedVoronoiTessellation(std::mt19937& rng, const std::v
 
         printf("\r                                     \riteration %i: %i swaps, %i unstable cell pairs, %i cell pairs checked\n", loopCount, swapCount, unstableCellPairCount, cellPairCheckCount);
 
+        fprintf(file, "\"%i\",\"%i\"\n", loopCount, swapCount);
+
         // Save the state of things at the end of this iteration
         {
             if (params.showSiteEvolution)
@@ -753,10 +788,12 @@ void MakeCapacityConstraintedVoronoiTessellation(std::mt19937& rng, const std::v
                 SaveDFT(params.baseFileName, sites, params.DFTImageWidth, params.DFTImageHeight, loopCount);
         }
     }
+
+    fclose(file);
 }
 
-template <typename LAMBDA>
-void GeneratePointsFromFunction(std::vector<Vec2>& points, size_t c_numPoints, std::mt19937& rng, bool lowDiscrepancy, const LAMBDA& lambda)
+template <typename DENSITY_TEST_LAMBDA>
+void GeneratePointsFromFunction(std::vector<Vec2>& points, size_t c_numPoints, std::mt19937& rng, SampleGeneration sampleGeneration, const DENSITY_TEST_LAMBDA& densityTestLambda)
 {
     std::uniform_real_distribution<float> dist(0.0f, 1.0f);
 
@@ -764,35 +801,67 @@ void GeneratePointsFromFunction(std::vector<Vec2>& points, size_t c_numPoints, s
     while (points.size() < c_numPoints)
     {
         float x, y;
-        if (lowDiscrepancy)
+        switch (sampleGeneration)
         {
-            x = VanDerCorput(attemptIndex + 1, 2);
-            y = VanDerCorput(attemptIndex + 1, 3);
+            case SampleGeneration::WhiteNoise:
+            {
+                x = dist(rng);
+                y = dist(rng);
+                break;
+            }
+            case SampleGeneration::Halton23:
+            {
+                // skip index 0 which is (0,0). A terrible place to sample!
+                x = VanDerCorput(attemptIndex + 1, 2);
+                y = VanDerCorput(attemptIndex + 1, 3);
+                break;
+            }
+            case SampleGeneration::R2:
+            {
+                Vec2 r2 = R2(attemptIndex);
+                x = r2[0];
+                y = r2[1];
+                break;
+            }
         }
-        else
-        {
-            x = dist(rng);
-            y = dist(rng);
-        }
+
+        if (densityTestLambda(x, y, rng))
+            points.push_back({ x, y });
+
         attemptIndex++;
-
-        if (dist(rng) >= lambda(x, y))
-            continue;
-
-        points.push_back({ x, y });
     }
 }
 
-void GeneratePointsFromImage(const DensityImage& densityImage, std::vector<Vec2>& points, size_t c_numPoints, std::mt19937& rng, bool lowDiscrepancy)
+void GeneratePointsFromImage(const DensityImage& densityImage, std::vector<Vec2>& points, size_t c_numPoints, std::mt19937& rng, SampleGeneration sampleGeneration, bool blueNoiseRNG)
 {
-    GeneratePointsFromFunction(points, c_numPoints, rng, lowDiscrepancy,
-        [&] (float u, float v)
-        {
-            int x = (int)Clamp(u * float(densityImage.width), 0.0f, float(densityImage.width - 1));
-            int y = (int)Clamp(v * float(densityImage.height), 0.0f, float(densityImage.height - 1));
-            return densityImage.GetDensity(x, y);
-        }
-    );
+    if (blueNoiseRNG)
+    {
+        GeneratePointsFromFunction(points, c_numPoints, rng, sampleGeneration,
+            [&](float u, float v, std::mt19937& rng)
+            {
+                int x = (int)Clamp(u * float(densityImage.width), 0.0f, float(densityImage.width - 1));
+                int y = (int)Clamp(v * float(densityImage.height), 0.0f, float(densityImage.height - 1));
+
+                int bnx = x % g_blueNoiseWidth;
+                int bny = y % g_blueNoiseHeight;
+
+                return densityImage.GetDensity(x, y) >= g_blueNoisePixels[bny * g_blueNoiseWidth + bnx];
+            }
+        );
+    }
+    else
+    {
+        GeneratePointsFromFunction(points, c_numPoints, rng, sampleGeneration,
+            [&](float u, float v, std::mt19937& rng)
+            {
+                static std::uniform_real_distribution<float> dist(0.0f, 1.0f);
+
+                int x = (int)Clamp(u * float(densityImage.width), 0.0f, float(densityImage.width - 1));
+                int y = (int)Clamp(v * float(densityImage.height), 0.0f, float(densityImage.height - 1));
+                return densityImage.GetDensity(x, y) >= dist(rng);
+            }
+        );
+    }
 }
 
 template <typename GENERATE_POINTS_LAMBDA>
@@ -842,20 +911,32 @@ void GenerateBlueNoisePoints(const Parameters& params, const GENERATE_POINTS_LAM
     }
 }
 
+void LoadBlueNoise()
+{
+    int components;
+    unsigned char* pixels = stbi_load("images/bn_rgb_256.png", &g_blueNoiseWidth, &g_blueNoiseHeight, &components, 4);
+
+    g_blueNoisePixels.resize(g_blueNoiseWidth * g_blueNoiseHeight);
+    for (size_t index = 0; index < g_blueNoisePixels.size(); ++index)
+        g_blueNoisePixels[index] = float(pixels[index * 4]) / 255.0f;
+
+    stbi_image_free(pixels);
+}
+
 int main(int argc, char** argv)
 {
-    bool doTest_Uniform64   = false;
-    bool doTest_Uniform1k   = false;
-    bool doTest_Procedural  = false;
-    bool doTest_SolidLDS    = true;  // TODO: this and the next are for showing halton doing better than white
-    bool doTest_GradientLDS = false;  // TODO: try and make the difference between white and LDS bigger in both solid and gradient
-    bool doTest_Gradient    = false;
-    bool doTest_PuppySmall  = false;
-    bool doTest_Puppy       = false;
-    bool doTest_Mountain    = false;
+    bool doTest_Uniform64   = true;
+    bool doTest_Uniform1k   = true;
+    bool doTest_Procedural  = true;
+    bool doTest_SolidLDS    = true;
+    bool doTest_GradientLDS = true;
+    bool doTest_Gradient    = true;
+    bool doTest_PuppySmall  = true;
+    bool doTest_Puppy       = true;
+    bool doTest_Mountain    = true;
 
-    // TODO: note regarding halton. missing sequences can hurt the sampling pattern. unsure if it's a net gain or not yet (try and find out?)
-    // is there an LDS where when values random drop out, the remaining ones are decently lds? might be a good thing to add to the list.
+    // load the blue noise mask texture (made with void and cluster), as a source of per pixel RNG
+    LoadBlueNoise();
 
     // This is the "classic" algorithm making regular blue noise.
     // The "classic" algorithm works off of pixels, and this would probably be more efficiently implemented that way instead
@@ -925,16 +1006,19 @@ int main(int argc, char** argv)
         GenerateBlueNoisePoints(params,
             [&](std::vector<Vec2>& points, size_t numPoints, std::mt19937& rng)
             {
-                GeneratePointsFromFunction(points, numPoints, rng, false,
-                    [](float x, float y)
+                GeneratePointsFromFunction(points, numPoints, rng, SampleGeneration::WhiteNoise,
+                    [](float x, float y, std::mt19937& rng)
                     {
-                        return (sin(x * 2.0f * c_pi * 4.0f) * 0.5f + 0.5f) * (sin(y * 2.0f * c_pi * 4.0f) * 0.5f + 0.5f);
+                        static std::uniform_real_distribution<float> dist(0.0f, 1.0f);
+
+                        return (sin(x * 2.0f * c_pi * 4.0f) * 0.5f + 0.5f) * (sin(y * 2.0f * c_pi * 4.0f) * 0.5f + 0.5f) >= dist(rng);
                     }
                 );
             }
         );
     }
 
+    // show difference in point generation in solid color regions, for white noise vs LDS
     if (doTest_SolidLDS)
     {
         Parameters params;
@@ -964,7 +1048,7 @@ int main(int argc, char** argv)
             GenerateBlueNoisePoints(params,
                 [&](std::vector<Vec2>& points, size_t numPoints, std::mt19937& rng)
                 {
-                    GeneratePointsFromImage(densityImage, points, numPoints, rng, false);
+                    GeneratePointsFromImage(densityImage, points, numPoints, rng, SampleGeneration::WhiteNoise, false);
                 }
             );
         }
@@ -976,18 +1060,43 @@ int main(int argc, char** argv)
             GenerateBlueNoisePoints(params,
                 [&](std::vector<Vec2>& points, size_t numPoints, std::mt19937& rng)
                 {
-                    GeneratePointsFromImage(densityImage, points, numPoints, rng, true);
+                    GeneratePointsFromImage(densityImage, points, numPoints, rng, SampleGeneration::Halton23, false);
+                }
+            );
+        }
+
+        // R2/white to init the initial distribution
+        {
+            params.baseFileName = "solid_r2white";
+
+            GenerateBlueNoisePoints(params,
+                [&](std::vector<Vec2>& points, size_t numPoints, std::mt19937& rng)
+                {
+                    GeneratePointsFromImage(densityImage, points, numPoints, rng, SampleGeneration::R2, false);
+                }
+            );
+        }
+
+        // R2/blue to init the initial distribution
+        {
+            params.baseFileName = "solid_r2blue";
+
+            GenerateBlueNoisePoints(params,
+                [&](std::vector<Vec2>& points, size_t numPoints, std::mt19937& rng)
+                {
+                    GeneratePointsFromImage(densityImage, points, numPoints, rng, SampleGeneration::R2, true);
                 }
             );
         }
     }
 
+    // show difference in point generation in varied color regions, for white noise vs LDS
     if (doTest_GradientLDS)
     {
         Parameters params;
         params.baseFileName = "gradient";
-        params.numSites = 1024;
-        params.numPoints = params.numSites * 5;
+        params.numSites = 100;
+        params.numPoints = params.numSites * 1;
         params.siteImageDotRadius = 0.5f;
 
         // load the image if we can
@@ -999,6 +1108,7 @@ int main(int argc, char** argv)
 
         params.siteImageWidth = densityImage.width;
         params.siteImageHeight = densityImage.height;
+        params.DFTImageWidth = params.DFTImageHeight = 128;
 
         // save the starting image (we made it greyscale)
         sprintf_s(buffer, "out/%s.source.png", params.baseFileName);
@@ -1011,7 +1121,7 @@ int main(int argc, char** argv)
             GenerateBlueNoisePoints(params,
                 [&](std::vector<Vec2>& points, size_t numPoints, std::mt19937& rng)
                 {
-                    GeneratePointsFromImage(densityImage, points, numPoints, rng, false);
+                    GeneratePointsFromImage(densityImage, points, numPoints, rng, SampleGeneration::WhiteNoise, false);
                 }
             );
         }
@@ -1023,7 +1133,31 @@ int main(int argc, char** argv)
             GenerateBlueNoisePoints(params,
                 [&](std::vector<Vec2>& points, size_t numPoints, std::mt19937& rng)
                 {
-                    GeneratePointsFromImage(densityImage, points, numPoints, rng, true);
+                    GeneratePointsFromImage(densityImage, points, numPoints, rng, SampleGeneration::Halton23, false);
+                }
+            );
+        }
+
+        // R2 to init the initial distribution
+        {
+            params.baseFileName = "gradient_r2white";
+
+            GenerateBlueNoisePoints(params,
+                [&](std::vector<Vec2>& points, size_t numPoints, std::mt19937& rng)
+                {
+                    GeneratePointsFromImage(densityImage, points, numPoints, rng, SampleGeneration::R2, false);
+                }
+            );
+        }
+
+        // R2 / blue noise to init the initial distribution
+        {
+            params.baseFileName = "gradient_r2blue";
+
+            GenerateBlueNoisePoints(params,
+                [&](std::vector<Vec2>& points, size_t numPoints, std::mt19937& rng)
+                {
+                    GeneratePointsFromImage(densityImage, points, numPoints, rng, SampleGeneration::R2, true);
                 }
             );
         }
@@ -1054,7 +1188,7 @@ int main(int argc, char** argv)
         GenerateBlueNoisePoints(params,
             [&](std::vector<Vec2>& points, size_t numPoints, std::mt19937& rng)
             {
-                GeneratePointsFromImage(densityImage, points, numPoints, rng, false);
+                GeneratePointsFromImage(densityImage, points, numPoints, rng, SampleGeneration::WhiteNoise, false);
             }
         );
     }
@@ -1084,7 +1218,7 @@ int main(int argc, char** argv)
         GenerateBlueNoisePoints(params,
             [&](std::vector<Vec2>& points, size_t numPoints, std::mt19937& rng)
             {
-                GeneratePointsFromImage(densityImage, points, numPoints, rng, false);
+                GeneratePointsFromImage(densityImage, points, numPoints, rng, SampleGeneration::WhiteNoise, false);
             }
         );
     }
@@ -1115,7 +1249,7 @@ int main(int argc, char** argv)
         GenerateBlueNoisePoints(params,
             [&](std::vector<Vec2>& points, size_t numPoints, std::mt19937& rng)
             {
-                GeneratePointsFromImage(densityImage, points, numPoints, rng, false);
+                GeneratePointsFromImage(densityImage, points, numPoints, rng, SampleGeneration::WhiteNoise, false);
             }
         );
     }
@@ -1147,7 +1281,7 @@ int main(int argc, char** argv)
         GenerateBlueNoisePoints(params,
             [&](std::vector<Vec2>& points, size_t numPoints, std::mt19937& rng)
             {
-                GeneratePointsFromImage(densityImage, points, numPoints, rng, false);
+                GeneratePointsFromImage(densityImage, points, numPoints, rng, SampleGeneration::WhiteNoise, false);
             }
         );
     }
@@ -1156,13 +1290,6 @@ int main(int argc, char** argv)
 }
 
 /*
-
-* LDS vs white noise for that sampling stuff for initial image distribution. or maybe just talk about it and how i'll bet it's better.
- * could just do halton for example.
- * do this on a white image?
-
-* could make a csv of swaps over time to show the convergence rate
-
 
 NOTES:
 * in blog, show the full story of the algorithms talked about in pictures
@@ -1181,10 +1308,10 @@ NOTES:
 * the official implementation for the paper has numpoints = numsites*1024, but this is tuneable for quality vs speed
 * i made voronoi's solid, but in reality they aren't (could show)
 * i'm sure there's some good optimizations to be done to the algorithm. 
-
-
-
-
-
+* tried "pixel space blue noise" for LDS generation? use that for RNG instead of white noise!
+ * i tried it, and didn't find it useful. Some more exploring could be done there & maybe there's something but i didn't see it.
+* regarding halton. missing sequences can hurt the sampling pattern.
+ * still looks like a net gain.
+ * the ideal sampling pattern is the one we are trying to generate with this algorithm, so....
 
 */
