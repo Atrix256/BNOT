@@ -925,15 +925,17 @@ void LoadBlueNoise()
 
 int main(int argc, char** argv)
 {
-    bool doTest_Uniform64   = true;
-    bool doTest_Uniform1k   = true;
-    bool doTest_Procedural  = true;
-    bool doTest_SolidLDS    = true;
-    bool doTest_GradientLDS = true;
-    bool doTest_Gradient    = true;
-    bool doTest_PuppySmall  = true;
-    bool doTest_Puppy       = true;
-    bool doTest_Mountain    = true;
+    bool doTest_Uniform64     = false;
+    bool doTest_Uniform1k     = false;
+    bool doTest_Procedural    = false;
+    bool doTest_SolidLDS      = false;
+    bool doTest_GradientLDS   = false;
+    bool doTest_Gradient      = false;
+    bool doTest_PuppySmall    = false;
+    bool doTest_Puppy         = false;
+    bool doTest_MountainTiny  = true;
+    bool doTest_MountainSmall = false;
+    bool doTest_Mountain      = false;
 
     // load the blue noise mask texture (made with void and cluster), as a source of per pixel RNG
     LoadBlueNoise();
@@ -1254,10 +1256,68 @@ int main(int argc, char** argv)
         );
     }
 
+    if (doTest_MountainTiny)
+    {
+        Parameters params;
+        params.baseFileName = "mountainstiny";
+        params.numSites = 1000;
+        params.numPoints = params.numSites * 5;
+        params.siteImageDotRadius = 0.0f;
+
+        // load the image if we can
+        char buffer[1024];
+        DensityImage densityImage;
+        sprintf_s(buffer, "images/%s.png", params.baseFileName);
+        if (!densityImage.Load(buffer))
+            return 1;
+
+        params.siteImageWidth = densityImage.width;
+        params.siteImageHeight = densityImage.height;
+
+        // save the starting image (we made it greyscale)
+        sprintf_s(buffer, "out/%s.png", params.baseFileName);
+        densityImage.Save(buffer);
+
+        GenerateBlueNoisePoints(params,
+            [&](std::vector<Vec2>& points, size_t numPoints, std::mt19937& rng)
+            {
+                GeneratePointsFromImage(densityImage, points, numPoints, rng, SampleGeneration::Halton23, false);
+            }
+        );
+    }
+
+    if (doTest_MountainSmall)
+    {
+        Parameters params;
+        params.baseFileName = "mountainssmall";
+        params.numSites = 10240;
+        params.numPoints = params.numSites * 10;
+        params.siteImageDotRadius = 0.25f;
+
+        // load the image if we can
+        char buffer[1024];
+        DensityImage densityImage;
+        sprintf_s(buffer, "images/%s.png", params.baseFileName);
+        if (!densityImage.Load(buffer))
+            return 1;
+
+        params.siteImageWidth = densityImage.width;
+        params.siteImageHeight = densityImage.height;
+
+        // save the starting image (we made it greyscale)
+        sprintf_s(buffer, "out/%s.png", params.baseFileName);
+        densityImage.Save(buffer);
+
+        GenerateBlueNoisePoints(params,
+            [&](std::vector<Vec2>& points, size_t numPoints, std::mt19937& rng)
+            {
+                GeneratePointsFromImage(densityImage, points, numPoints, rng, SampleGeneration::WhiteNoise, false);
+            }
+        );
+    }
+
     if (doTest_Mountain)
     {
-        static const char* baseFileName = "mountains";
-
         Parameters params;
         params.baseFileName = "mountains";
         params.numSites = 10240;
@@ -1267,7 +1327,7 @@ int main(int argc, char** argv)
         // load the image if we can
         char buffer[1024];
         DensityImage densityImage;
-        sprintf_s(buffer, "images/%s.png", baseFileName);
+        sprintf_s(buffer, "images/%s.png", params.baseFileName);
         if (!densityImage.Load(buffer))
             return 1;
 
@@ -1275,7 +1335,7 @@ int main(int argc, char** argv)
         params.siteImageHeight = densityImage.height;
 
         // save the starting image (we made it greyscale)
-        sprintf_s(buffer, "out/%s.png", baseFileName);
+        sprintf_s(buffer, "out/%s.png", params.baseFileName);
         densityImage.Save(buffer);
 
         GenerateBlueNoisePoints(params,
